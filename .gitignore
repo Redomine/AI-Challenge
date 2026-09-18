@@ -9,3 +9,14 @@ __pycache__/
 *.pyc
 .env
 .env.*
+
+# Local build and test output
+artifacts/
+
+# Runtime state and local databases
+*.db
+*.db-shm
+*.db-wal
+
+# Windows shortcuts contain machine-specific absolute paths
+*.lnk
