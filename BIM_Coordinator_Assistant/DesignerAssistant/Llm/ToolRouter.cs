@@ -75,6 +75,17 @@ public sealed class ToolRouter
                 0,
                 "Сейчас инструмент чтения состава вида недоступен в запущенном rvt-mcp. Я не буду угадывать элементы по сведениям о виде. Перезапустите Revit и ассистента после установки custom-плагина.");
         }
+        if (IsSelectionRequest(latestUserMessage) &&
+            toolNames.Contains("revit_get_selected_elements", StringComparer.Ordinal))
+        {
+            return new ToolRouteDecision(
+                "call_tool",
+                "revit_get_selected_elements",
+                "Запрос относится к текущему выделению Revit; ElementId нужно получить автоматически.",
+                0,
+                0,
+                0);
+        }
         var deterministicTool = MatchDeterministicRoute(latestUserMessage, toolNames);
         if (deterministicTool is not null)
         {
@@ -206,6 +217,12 @@ public sealed class ToolRouter
             Regex.IsMatch(text, @"\b(что|кто)\s+(есть|находится|расположен\w*|показан\w*|видно)\b");
         return mentionsView && asksForContents;
     }
+
+    private static bool IsSelectionRequest(string message) =>
+        !string.IsNullOrWhiteSpace(message) && Regex.IsMatch(
+            message,
+            @"\b(выбран\w*|выделен\w*|отмечен\w*|текущ\w*\s+выбор\w*|в\s+выборе)\b",
+            RegexOptions.IgnoreCase);
 
     private static int ReadInt(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.TryGetInt32(out var result) ? result : 0;

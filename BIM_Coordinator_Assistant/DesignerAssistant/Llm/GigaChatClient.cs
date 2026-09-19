@@ -160,7 +160,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient
         {
             object functionChoice = forcedTool is not null
                 ? new Dictionary<string, string> { ["name"] = forcedTool }
-                : toolWasInvoked || route.Action == "answer" ? "none" : "auto";
+                : route.Action == "answer" ? "none" : "auto";
             using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
             {
                 Content = JsonContent.Create(new

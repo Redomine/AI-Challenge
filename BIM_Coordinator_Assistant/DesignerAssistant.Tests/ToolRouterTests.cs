@@ -84,9 +84,10 @@ public sealed class ToolRouterTests
     }
 
     [Fact]
-    public async Task RoutesArbitraryWordingToKnownTool()
+    public async Task RoutesMarkedElementsToSelectionWithoutLlmRoundTrip()
     {
-        using var http = new HttpClient(new FakeHandler(Response("revit_get_selected_elements")));
+        var handler = new FakeHandler(Response("revit_get_selected_elements"));
+        using var http = new HttpClient(handler);
         var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
         var decision = await router.RouteAsync(
             [new ChatMessage("user", "Что у меня сейчас отмечено в модели?")],
@@ -94,7 +95,30 @@ public sealed class ToolRouterTests
 
         Assert.Equal("call_tool", decision.Action);
         Assert.Equal("revit_get_selected_elements", decision.ToolName);
-        Assert.Equal(30, decision.BilledTokens);
+        Assert.Equal(0, decision.BilledTokens);
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Theory]
+    [InlineData("Что за элементы выбраны?")]
+    [InlineData("Какие объекты сейчас выделены?")]
+    [InlineData("У меня выбрано 7 элементов. Запиши им комментарий")]
+    [InlineData("Покажи текущий выбор в Revit")]
+    [InlineData("Что находится в выборе?")]
+    [InlineData("Какие элементы отмечены в модели?")]
+    public async Task RoutesSelectionRequestsWithoutAskingForElementIds(string question)
+    {
+        var handler = new FakeHandler(Response("revit_get_element_details"));
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", question)],
+            [Tool("revit_get_selected_elements"), Tool("revit_set_element_parameter_values")]);
+
+        Assert.Equal("call_tool", decision.Action);
+        Assert.Equal("revit_get_selected_elements", decision.ToolName);
+        Assert.Equal(0, handler.RequestCount);
     }
 
     [Fact]
