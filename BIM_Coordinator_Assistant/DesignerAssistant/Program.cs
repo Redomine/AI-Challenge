@@ -1,7 +1,6 @@
 using System.Text;
 using DesignerAssistant.Agent;
 using DesignerAssistant.Configuration;
-using DesignerAssistant.Diagnostics;
 using DesignerAssistant.Llm;
 using DesignerAssistant.Memory;
 using DesignerAssistant.Models;
@@ -52,6 +51,7 @@ try
     ILlmClient llmClient = new GigaChatClient(httpClient, options);
     IChatHistoryStore historyStore = new SqliteChatHistoryStore(options.DatabasePath);
     IMemoryStore memoryStore = new SqliteMemoryStore(options.DatabasePath);
+    IUserProfileStore profileStore = new SqliteUserProfileStore(options.DatabasePath);
     await using var revit = new RevitMcpClient(confirmWriteAsync: ConfirmRevitWriteAsync);
     IDesignAssistantAgent agent = new DesignAssistantAgent(
         llmClient,
@@ -59,7 +59,8 @@ try
         memoryStore,
         DesignerAssistantPrompt.Text,
         options,
-        revit);
+        revit,
+        profileStore);
     await agent.InitializeAsync(cancellationSource.Token);
 
     PrintWelcome(options.Model, options.DatabasePath);
@@ -132,11 +133,9 @@ try
                 continue;
             }
 
-            if (input.Equals("/memory-test", StringComparison.OrdinalIgnoreCase))
+            if (input.StartsWith("/profile", StringComparison.OrdinalIgnoreCase))
             {
-                Console.WriteLine("Автотест выполнит 5 запросов к GigaChat в изолированной памяти. Рабочая база не изменится.\n");
-                var results = await MemoryLayersAutoTest.RunAsync(llmClient, options, cancellationSource.Token);
-                PrintMemoryTest(results);
+                await HandleProfileCommandAsync(agent, input, cancellationSource.Token);
                 continue;
             }
 
@@ -371,7 +370,11 @@ static void PrintHelp()
     Console.WriteLine("  /help                              показать все команды");
     Console.WriteLine("  /history                           показать восстановленный диалог");
     Console.WriteLine("  /memory                            показать состояние слоёв памяти");
-    Console.WriteLine("  /memory-test                       проверить слои памяти через GigaChat");
+    Console.WriteLine("  /profile create                    создать профиль через мастер");
+    Console.WriteLine("  /profile edit                      изменить профиль через мастер");
+    Console.WriteLine("  /profile show                      показать активный профиль");
+    Console.WriteLine("  /profile select [имя]              показать или выбрать профиль");
+    Console.WriteLine("  /profile delete                    удалить активный профиль");
     Console.WriteLine("  /debug on|off|status               управлять Tool route/trace/result");
     Console.WriteLine("  /remember work <ключ>=<значение>   сохранить в рабочую память");
     Console.WriteLine("  /remember long <ключ>=<значение>   сохранить в долговременную память");
@@ -395,21 +398,129 @@ static string FormatRevitSessions(IReadOnlyList<RevitSession> sessions)
     return string.Join(Environment.NewLine, lines);
 }
 
-static void PrintMemoryTest(IReadOnlyList<MemoryTestStep> results)
+static async Task HandleProfileCommandAsync(
+    IDesignAssistantAgent agent,
+    string input,
+    CancellationToken cancellationToken)
 {
-    Console.WriteLine("===== ПРОВЕРКА MEMORY LAYERS =====");
-    foreach (var result in results)
+    var argument = input["/profile".Length..].Trim();
+    var command = argument.ToLowerInvariant();
+    var current = await agent.GetProfileAsync(cancellationToken);
+    switch (command)
     {
-        Console.ForegroundColor = result.Passed ? ConsoleColor.Green : ConsoleColor.Red;
-        Console.WriteLine($"[{(result.Passed ? "PASS" : "FAIL")}] {result.Name}");
-        Console.ResetColor();
-        Console.WriteLine($"Слои: short={result.Memory.ShortTerm.Count}, work={result.Memory.Working.Count}, long={result.Memory.LongTerm.Count}");
-        foreach (var entry in result.Memory.Working) Console.WriteLine($"  work: {entry.Key}={entry.Value}");
-        foreach (var entry in result.Memory.LongTerm) Console.WriteLine($"  long: {entry.Key}={entry.Value}");
-        Console.WriteLine($"Ожидание: {result.Expectation}");
-        Console.WriteLine($"Ответ: {result.Answer}\n");
+        case "show":
+        case "":
+            PrintProfile(current);
+            return;
+        case "create":
+            Console.Write("Имя нового профиля: ");
+            var name = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Имя профиля не должно быть пустым.");
+            if ((await agent.GetProfilesAsync(cancellationToken)).Any(profile => profile.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                throw new ArgumentException($"Профиль '{name}' уже существует. Выберите его и используйте /profile edit.");
+            await agent.SaveProfileAsync(ReadProfile(name, null), cancellationToken);
+            Console.WriteLine($"Профиль '{name}' создан и выбран.\n");
+            return;
+        case "edit" when current is null:
+            throw new ArgumentException("Профиль ещё не создан. Используйте /profile create.");
+        case "edit":
+            await agent.SaveProfileAsync(ReadProfile(current.Name, current), cancellationToken);
+            Console.WriteLine($"Профиль '{current.Name}' обновлён.\n");
+            return;
+        case "select":
+            PrintProfileList(await agent.GetProfilesAsync(cancellationToken), current?.Name);
+            return;
+        case "delete" when current is null:
+            Console.WriteLine("Профиль отсутствует.\n");
+            return;
+        case "delete":
+            Console.Write("Удалить профиль? [да/нет, по умолчанию нет]: ");
+            if (Console.ReadLine()?.Trim().Equals("да", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                await agent.DeleteProfileAsync(cancellationToken);
+                Console.WriteLine("Профиль удалён.\n");
+            }
+            else
+            {
+                Console.WriteLine("Удаление отменено.\n");
+            }
+            return;
+        default:
+            if (command.StartsWith("select ", StringComparison.Ordinal))
+            {
+                var selectedName = argument["select".Length..].Trim();
+                if (!await agent.SelectProfileAsync(selectedName, cancellationToken))
+                    throw new ArgumentException($"Профиль '{selectedName}' не найден. Используйте /profile select для просмотра списка.");
+                Console.WriteLine($"Выбран профиль '{selectedName}'. Он будет восстановлен при следующем запуске.\n");
+                return;
+            }
+            throw new ArgumentException("Используйте /profile create, /profile edit, /profile show, /profile select [имя] или /profile delete.");
     }
-    Console.WriteLine($"Итог: {results.Count(result => result.Passed)}/{results.Count} проверок пройдено.\n");
+}
+
+static UserProfile ReadProfile(string name, UserProfile? current)
+{
+    Console.WriteLine(current is null
+        ? "Создание профиля. Каждый блок завершайте отдельной строкой '.'."
+        : "Редактирование профиля. Сразу '.' сохраняет блок, '-' очищает его.");
+    return new UserProfile(
+        name,
+        ReadProfileBlock("Style", current?.Style),
+        ReadProfileBlock("Constraints/Tooling", current?.ConstraintsAndTooling),
+        ReadProfileBlock("Context", current?.Context));
+}
+
+static string ReadProfileBlock(string label, string? current)
+{
+    Console.WriteLine($"\n{label}:");
+    if (!string.IsNullOrWhiteSpace(current)) Console.WriteLine($"Текущее значение:\n{current}");
+    Console.WriteLine("Введите свободное описание. Отдельная строка '.' завершает блок.");
+    var lines = new List<string>();
+    while (true)
+    {
+        var line = Console.ReadLine();
+        if (line is null || line.Trim() == ".") break;
+        if (lines.Count == 0 && line.Trim() == "-") return "";
+        lines.Add(line);
+    }
+
+    var value = string.Join(Environment.NewLine, lines).Trim();
+    return value.Length == 0 && current is not null ? current : value;
+}
+
+static void PrintProfile(UserProfile? profile)
+{
+    if (profile is null)
+    {
+        Console.WriteLine("Профиль не создан. Используйте /profile create.\n");
+        return;
+    }
+
+    Console.WriteLine($"Профиль: {profile.Name}");
+    Console.WriteLine("Style:");
+    Console.WriteLine(profile.Style);
+    Console.WriteLine("\nConstraints/Tooling:");
+    Console.WriteLine(profile.ConstraintsAndTooling);
+    Console.WriteLine("\nContext:");
+    Console.WriteLine(profile.Context);
+    Console.WriteLine();
+}
+
+static void PrintProfileList(IReadOnlyList<UserProfile> profiles, string? activeName)
+{
+    if (profiles.Count == 0)
+    {
+        Console.WriteLine("Профили отсутствуют. Используйте /profile create.\n");
+        return;
+    }
+
+    Console.WriteLine("Профили:");
+    foreach (var profile in profiles)
+    {
+        var marker = profile.Name.Equals(activeName, StringComparison.OrdinalIgnoreCase) ? " [активный]" : "";
+        Console.WriteLine($"  {profile.Name}{marker}");
+    }
+    Console.WriteLine();
 }
 
 static Task<bool> ConfirmRevitWriteAsync(string proposal)

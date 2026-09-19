@@ -38,9 +38,15 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
             throw new InvalidOperationException($"Инструмент '{toolName}' запрещён политикой read-only.");
         }
 
-        var client = await GetClientAsync(cancellationToken);
-        var result = await client.CallToolAsync(toolName, arguments, cancellationToken: cancellationToken);
-        return FormatToolResult(result);
+        try
+        {
+            return await CallCoreAsync(toolName, arguments, cancellationToken);
+        }
+        catch (Exception) when (AllowedTools.Contains(toolName) && !cancellationToken.IsCancellationRequested)
+        {
+            await ResetClientAsync();
+            return await CallCoreAsync(toolName, arguments, cancellationToken);
+        }
     }
 
     public Task<string> ListTargetsAsync(CancellationToken token = default) => CallAsync("revit_list_available_targets", cancellationToken: token);
@@ -153,6 +159,23 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
         return _client;
     }
 
+    private async Task<string> CallCoreAsync(
+        string toolName,
+        IReadOnlyDictionary<string, object?>? arguments,
+        CancellationToken cancellationToken)
+    {
+        var client = await GetClientAsync(cancellationToken);
+        var result = await client.CallToolAsync(toolName, arguments, cancellationToken: cancellationToken);
+        return FormatToolResult(result);
+    }
+
+    private async Task ResetClientAsync()
+    {
+        var client = _client;
+        _client = null;
+        if (client is not null) await client.DisposeAsync();
+    }
+
     private static bool IsPermittedWriteTool(string name) =>
         !name.Contains("send_code", StringComparison.OrdinalIgnoreCase) &&
         !name.Contains("toolbaker", StringComparison.OrdinalIgnoreCase);
@@ -182,6 +205,6 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_client is not null) await _client.DisposeAsync();
+        await ResetClientAsync();
     }
 }

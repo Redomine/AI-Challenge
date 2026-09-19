@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DesignerAssistant.Configuration;
 using DesignerAssistant.Models;
 
@@ -34,9 +35,23 @@ public sealed class ToolRouter
     public async Task<ToolRouteDecision> RouteAsync(
         IReadOnlyCollection<ChatMessage> messages,
         IReadOnlyCollection<ToolDefinition> tools,
+        string? routingContext = null,
         CancellationToken cancellationToken = default)
     {
         var toolNames = tools.Select(tool => tool.Name).ToArray();
+        var latestUserMessage = messages.LastOrDefault(message =>
+            message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
+        var deterministicTool = MatchDeterministicRoute(latestUserMessage, toolNames);
+        if (deterministicTool is not null)
+        {
+            return new ToolRouteDecision(
+                "call_tool",
+                deterministicTool,
+                "Однозначный запрос к Revit распознан локальным маршрутизатором.",
+                0,
+                0,
+                0);
+        }
         var catalogue = string.Join(
             Environment.NewLine,
             tools.Select(tool => $"- {tool.Name}: {tool.Description}"));
@@ -59,9 +74,13 @@ public sealed class ToolRouter
             new
             {
                 role = "system",
-                content = "Ты маршрутизатор инструментов. Выбери call_tool, если для ответа нужны актуальные данные или действие в Revit. Выбери answer для разговора, объяснения или данных, уже присутствующих в диалоге. Не отвечай на задачу пользователя."
+                content = "Ты маршрутизатор инструментов. Выбери call_tool, если для ответа нужны актуальные данные или действие в Revit. Выбери answer для разговора, объяснения или данных, уже присутствующих в диалоге. Вопросы о названиях, назначении, параметрах или доступности инструментов отвечаются по переданному каталогу: для них всегда выбирай answer и никогда не вызывай инструмент. Слова 'команда' и 'вызов' сами по себе не означают просьбу выполнить действие. Не отвечай на задачу пользователя."
             },
-            new { role = "user", content = $"Диалог:\n{dialogue}\n\nДоступные инструменты:\n{catalogue}" }
+            new
+            {
+                role = "user",
+                content = $"Применимые инструкции профиля:\n{routingContext ?? "Не заданы."}\n\nДиалог:\n{dialogue}\n\nДоступные инструменты:\n{catalogue}"
+            }
         };
 
         using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
@@ -111,6 +130,25 @@ public sealed class ToolRouter
             ReadInt(usage, "prompt_tokens"),
             ReadInt(usage, "completion_tokens"),
             ReadInt(usage, "total_tokens"));
+    }
+
+    private static string? MatchDeterministicRoute(string message, IReadOnlyCollection<string> toolNames)
+    {
+        bool Has(string name) => toolNames.Contains(name, StringComparer.Ordinal);
+        if (Has("revit_get_element_details") &&
+            Regex.IsMatch(message, @"(?<!\d)\d{5,}(?!\d)") &&
+            Regex.IsMatch(message, @"элемент|объект|что\s+(это|за)", RegexOptions.IgnoreCase))
+        {
+            return "revit_get_element_details";
+        }
+
+        if (Has("revit_get_current_view_info") &&
+            Regex.IsMatch(message, @"активн\w*\s+вид", RegexOptions.IgnoreCase))
+        {
+            return "revit_get_current_view_info";
+        }
+
+        return null;
     }
 
     private static int ReadInt(JsonElement element, string name) =>

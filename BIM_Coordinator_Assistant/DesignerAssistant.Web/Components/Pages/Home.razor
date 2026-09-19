@@ -1,0 +1,203 @@
+@page "/"
+@implements IDisposable
+@inject AssistantSession Session
+@inject IWebHostEnvironment Environment
+
+<PageTitle>BIM Assistant</PageTitle>
+
+<div class="app-shell">
+    <aside class="sidebar">
+        <header class="brand">
+            <span class="brand-mark">BA</span>
+            <div><strong>BIM Assistant</strong><small>Координация и поддержка</small></div>
+        </header>
+
+        <nav class="primary-nav" aria-label="Разделы">
+            <button class="@NavClass("chat")" @onclick='@(() => OpenSection("chat"))'>Чат</button>
+            <button class="@NavClass("profiles")" @onclick="OpenProfilesAsync">Профили</button>
+            <button class="@NavClass("prompt")" @onclick='@(() => OpenSection("prompt"))'>Базовый prompt</button>
+            <button class="@NavClass("memory")" @onclick="OpenMemoryAsync">Память</button>
+            <button class="@NavClass("revit")" @onclick="OpenRevitAsync">Revit</button>
+        </nav>
+
+        <div class="sidebar-status">
+            <span class="status-dot @(_ready ? "online" : "")"></span>
+            <div><strong>@(_ready ? "Агент готов" : "Подключение")</strong><small>@(_activeProfile?.Name ?? "Без профиля")</small></div>
+        </div>
+    </aside>
+
+    <main class="workspace">
+        @if (!_ready)
+        {
+            <section class="empty-state"><h1>BIM Assistant</h1><p>@(_error ?? "Подготавливаю рабочую сессию...")</p></section>
+        }
+        else if (_section == "chat")
+        {
+            <header class="workspace-header">
+                <div><h1>Диалог</h1><p>Профиль: @(_activeProfile?.Name ?? "не выбран")</p></div>
+                <button class="secondary" @onclick="ClearHistoryAsync" disabled="@_busy">Очистить диалог</button>
+            </header>
+            <section class="chat-log" aria-live="polite">
+                @if (Session.History.Count == 0)
+                {
+                    <div class="empty-chat"><h2>Новый диалог</h2><p>Опишите задачу по модели, плагину или скрипту.</p></div>
+                }
+                @foreach (var message in Session.History)
+                {
+                    <article class="message @message.Role">
+                        <span>@(message.Role == "user" ? "Вы" : "Ассистент")</span>
+                        <p>@message.Content</p>
+                    </article>
+                }
+                @if (_busy) { <div class="thinking">Ассистент анализирует запрос...</div> }
+            </section>
+            <footer class="composer">
+                @if (_lastToolTraces.Count > 0)
+                {
+                    <details class="tool-details"><summary>Диагностика инструментов</summary>@foreach (var trace in _lastToolTraces) { <pre>@trace</pre> }</details>
+                }
+                <textarea @bind="_message" @bind:event="oninput" placeholder="Сообщение ассистенту" rows="3" disabled="@_busy"></textarea>
+                <div class="composer-actions">
+                    <span>@(_lastUsage ?? "Enter в поле переносит строку")</span>
+                    <button class="primary" @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_message))">Отправить</button>
+                </div>
+            </footer>
+        }
+        else if (_section == "profiles")
+        {
+            <header class="workspace-header"><div><h1>Профили</h1><p>Стиль, инструменты и контекст каждого режима работы</p></div><button class="primary" @onclick="NewProfile">Создать профиль</button></header>
+            <section class="split-view">
+                <div class="item-list">
+                    @if (_profiles.Count == 0) { <p class="muted">Профили ещё не созданы.</p> }
+                    @foreach (var profile in _profiles)
+                    {
+                        <button class="list-item @(profile.Name == _editingProfile?.Name ? "selected" : "")" @onclick="() => EditProfile(profile)">
+                            <strong>@profile.Name</strong><span>@(profile.Name == _activeProfile?.Name ? "Активный" : "Выбрать и настроить")</span>
+                        </button>
+                    }
+                </div>
+                <EditForm Model="_profileDraft" OnValidSubmit="SaveProfileAsync" class="editor-form">
+                    <h2>@(_isNewProfile ? "Новый профиль" : "Настройка профиля")</h2>
+                    <label>Имя<input @bind="_profileDraft.Name" disabled="@(!_isNewProfile)" /></label>
+                    <label>Style<textarea @bind="_profileDraft.Style" rows="5" placeholder="Например: отвечай кратко, используй русский язык..."></textarea></label>
+                    <label>Constraints / Tooling<textarea @bind="_profileDraft.ConstraintsAndTooling" rows="6" placeholder="Стек, инструменты, ограничения и правила..."></textarea></label>
+                    <label>Context<textarea @bind="_profileDraft.Context" rows="6" placeholder="Роль, текущий проект и другой полезный контекст..."></textarea></label>
+                    <div class="form-actions">
+                        @if (!_isNewProfile && _editingProfile is not null)
+                        {
+                            <button type="button" class="danger" @onclick="DeleteProfileAsync">Удалить</button>
+                            @if (_editingProfile.Name != _activeProfile?.Name) { <button type="button" class="secondary" @onclick="SelectEditingProfileAsync">Выбрать</button> }
+                        }
+                        <button type="submit" class="primary">Сохранить и выбрать</button>
+                    </div>
+                </EditForm>
+            </section>
+        }
+        else if (_section == "prompt")
+        {
+            <header class="workspace-header"><div><h1>Базовый prompt</h1><p>Системная инструкция перед профилем и памятью</p></div><span class="readonly-badge">Только чтение</span></header>
+            <section class="prompt-view">
+                <textarea readonly aria-label="Базовый системный prompt">@DesignerAssistantPrompt.Text</textarea>
+            </section>
+        }
+        else if (_section == "memory")
+        {
+            <header class="workspace-header"><div><h1>Память</h1><p>Данные, которые агент добавляет в контекст</p></div><button class="secondary" @onclick="CompleteTaskAsync">Завершить задачу</button></header>
+            <section class="memory-grid">
+                <div><h2>Краткосрочная</h2><strong>@(_memory?.ShortTerm.Count ?? 0)</strong><p>сообщений текущего диалога</p></div>
+                <div><h2>Рабочая</h2>@foreach (var entry in _memory?.Working ?? []) { <article><strong>@entry.Key</strong><p>@entry.Value</p></article> }</div>
+                <div><h2>Долговременная</h2>@foreach (var entry in _memory?.LongTerm ?? []) { <article><strong>@entry.Key</strong><p>@entry.Value</p></article> }</div>
+            </section>
+        }
+        else
+        {
+            <header class="workspace-header"><div><h1>Сеансы Revit</h1><p>Выберите документ для MCP-инструментов</p></div><button class="secondary" @onclick="OpenRevitAsync">Обновить</button></header>
+            <section class="revit-list">
+                @if (_revitSessions.Count == 0) { <p class="muted">Доступные сеансы не найдены.</p> }
+                @foreach (var session in _revitSessions)
+                {
+                    <article><div><strong>@session.DisplayName</strong><span>PID @session.ProcessId</span></div><span class="availability @(session.IsRoutable ? "available" : "")">@(session.IsRoutable ? "Доступен" : "Не опубликован")</span><button class="secondary" disabled="@(!session.IsRoutable)" @onclick="() => SelectRevitAsync(session)">Выбрать</button></article>
+                }
+            </section>
+        }
+        @if (!string.IsNullOrWhiteSpace(_notice)) { <div class="notice">@_notice</div> }
+    </main>
+</div>
+
+@if (Session.PendingTransaction is not null)
+{
+    <div class="modal-backdrop">
+        <section class="confirmation" role="dialog" aria-modal="true" aria-labelledby="transaction-title">
+            <h2 id="transaction-title">Транзакция Revit</h2>
+            <p>Ассистент запрашивает изменение открытой модели.</p>
+            <pre>@Session.PendingTransaction</pre>
+            <div><button class="secondary" @onclick="() => ResolveTransaction(false)">Отменить</button><button class="danger-solid" @onclick="() => ResolveTransaction(true)">Разрешить изменение</button></div>
+        </section>
+    </div>
+}
+
+@code {
+    private string _section = "chat";
+    private string _message = "";
+    private string? _error, _notice, _lastUsage;
+    private bool _ready, _busy, _isNewProfile = true;
+    private UserProfile? _activeProfile, _editingProfile;
+    private UserProfileDraft _profileDraft = new();
+    private IReadOnlyList<UserProfile> _profiles = [];
+    private MemorySnapshot? _memory;
+    private IReadOnlyList<RevitSession> _revitSessions = [];
+    private IReadOnlyList<string> _lastToolTraces = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        try { await Session.InitializeAsync(Environment.ContentRootPath); _activeProfile = await Session.GetProfileAsync(); _ready = true; }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private string NavClass(string section) => _section == section ? "active" : "";
+    private void OpenSection(string section) { _section = section; _notice = null; }
+    private async Task OpenProfilesAsync() { OpenSection("profiles"); await ReloadProfilesAsync(); }
+    private async Task OpenMemoryAsync() { OpenSection("memory"); _memory = await Session.GetMemoryAsync(); }
+    private async Task OpenRevitAsync() { OpenSection("revit"); try { _revitSessions = await Session.GetRevitSessionsAsync(); } catch (Exception e) { _notice = e.Message; } }
+
+    private async Task SendAsync()
+    {
+        var text = _message.Trim(); if (text.Length == 0) return;
+        _message = ""; _busy = true; _notice = null;
+        try { var response = await Session.AskAsync(text); _lastToolTraces = response.ToolTraces ?? []; _lastUsage = $"Отправлено ≈{response.SentHistoryTokens:N0} токенов"; }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ClearHistoryAsync() { await Session.ClearHistoryAsync(); _notice = "Диалог очищен."; }
+    private async Task CompleteTaskAsync() { await Session.CompleteTaskAsync(); _memory = await Session.GetMemoryAsync(); _notice = "Рабочая память очищена."; }
+    private void NewProfile() { _isNewProfile = true; _editingProfile = null; _profileDraft = new(); }
+    private void EditProfile(UserProfile profile) { _isNewProfile = false; _editingProfile = profile; _profileDraft = UserProfileDraft.From(profile); }
+
+    private async Task SaveProfileAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_profileDraft.Name)) { _notice = "Укажите имя профиля."; return; }
+        if (_isNewProfile && _profiles.Any(p => p.Name.Equals(_profileDraft.Name, StringComparison.OrdinalIgnoreCase))) { _notice = "Профиль с таким именем уже существует."; return; }
+        await Session.SaveProfileAsync(_profileDraft.ToProfile());
+        await ReloadProfilesAsync(); _notice = "Профиль сохранён и выбран.";
+    }
+
+    private async Task SelectEditingProfileAsync() { if (_editingProfile is null) return; await Session.SelectProfileAsync(_editingProfile.Name); await ReloadProfilesAsync(); _notice = "Профиль выбран."; }
+    private async Task DeleteProfileAsync() { if (_editingProfile is null) return; await Session.SelectProfileAsync(_editingProfile.Name); await Session.DeleteProfileAsync(); NewProfile(); await ReloadProfilesAsync(); _notice = "Профиль удалён."; }
+    private async Task ReloadProfilesAsync() { _profiles = await Session.GetProfilesAsync(); _activeProfile = await Session.GetProfileAsync(); if (_editingProfile is null && _profiles.Count > 0) EditProfile(_activeProfile ?? _profiles[0]); }
+    private async Task SelectRevitAsync(RevitSession session) { _notice = await Session.SelectRevitSessionAsync(session.ProcessId.ToString()); }
+    private void ResolveTransaction(bool approved) => Session.ResolveTransaction(approved);
+    private void OnSessionChanged() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Session.Changed -= OnSessionChanged;
+
+    private sealed class UserProfileDraft
+    {
+        public string Name { get; set; } = "";
+        public string Style { get; set; } = "";
+        public string ConstraintsAndTooling { get; set; } = "";
+        public string Context { get; set; } = "";
+        public UserProfile ToProfile() => new(Name.Trim(), Style.Trim(), ConstraintsAndTooling.Trim(), Context.Trim());
+        public static UserProfileDraft From(UserProfile profile) => new() { Name = profile.Name, Style = profile.Style, ConstraintsAndTooling = profile.ConstraintsAndTooling, Context = profile.Context };
+    }
+}

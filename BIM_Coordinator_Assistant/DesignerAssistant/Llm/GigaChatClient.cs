@@ -128,6 +128,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient
     {
         await EnsureAccessTokenAsync(cancellationToken);
         var tools = await toolProvider.GetToolsAsync(cancellationToken);
+        trace?.Invoke($"Tool catalogue: {string.Join(", ", tools.Select(tool => tool.Name))}");
         var conversation = new List<Dictionary<string, object?>>
         {
             new() { ["role"] = "system", ["content"] = instructions }
@@ -137,7 +138,11 @@ public sealed class GigaChatClient : IToolCallingLlmClient
             ["role"] = message.Role, ["content"] = message.Content
         }));
 
-        var route = await _toolRouter.RouteAsync(messages, tools, cancellationToken);
+        var route = await _toolRouter.RouteAsync(
+            messages,
+            tools,
+            ExtractActiveProfile(instructions),
+            cancellationToken);
         trace?.Invoke($"Tool route: {route.Action}; tool={route.ToolName ?? "none"}; reason={route.Reason}");
         var totalPrompt = route.PromptTokens;
         var totalCompletion = route.CompletionTokens;
@@ -220,6 +225,16 @@ public sealed class GigaChatClient : IToolCallingLlmClient
         }
 
         throw new InvalidOperationException("GigaChat превысил лимит последовательных вызовов инструментов (4).");
+    }
+
+    private static string? ExtractActiveProfile(string instructions)
+    {
+        const string startTag = "[ACTIVE_USER_PROFILE";
+        const string endTag = "[/ACTIVE_USER_PROFILE]";
+        var start = instructions.IndexOf(startTag, StringComparison.Ordinal);
+        if (start < 0) return null;
+        var end = instructions.IndexOf(endTag, start, StringComparison.Ordinal);
+        return end < 0 ? null : instructions[start..(end + endTag.Length)];
     }
 
     public async Task<TokenCountResult> CountTextTokensAsync(
