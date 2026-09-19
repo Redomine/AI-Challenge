@@ -16,6 +16,7 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
         "revit_get_element_details", "revit_get_element_parameters",
         "revit_get_type_parameters", "revit_list_worksets",
         "revit_analyze_model_statistics", "revit_ai_element_filter"
+        , "revit_custom_summarize_elements", "revit_custom_list_elements"
     };
 
     private readonly string _serverPath;
@@ -160,7 +161,7 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
         {
             Name = "rvt-mcp-confirmed-writes",
             Command = _serverPath,
-            Arguments = ["--toolsets", "query,create,modify,delete,view,meta", "--disable-toolbaker"]
+            Arguments = ["--toolsets", "query,create,modify,delete,view,meta,custom", "--disable-toolbaker"]
         });
         _client = await McpClient.CreateAsync(transport, cancellationToken: token);
         return _client;

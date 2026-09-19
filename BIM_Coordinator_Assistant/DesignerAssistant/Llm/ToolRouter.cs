@@ -53,6 +53,28 @@ public sealed class ToolRouter
                 0,
                 ToolCapabilityCatalog.BuildUserSummary(tools, capabilityScope));
         }
+        if (IsViewInventoryRequest(latestUserMessage))
+        {
+            if (toolNames.Contains("revit_custom_summarize_elements", StringComparer.Ordinal))
+            {
+                return new ToolRouteDecision(
+                    "call_tool",
+                    "revit_custom_summarize_elements",
+                    "Запрос состава вида направлен в специализированный инструмент инвентаризации.",
+                    0,
+                    0,
+                    0);
+            }
+
+            return new ToolRouteDecision(
+                "answer",
+                null,
+                "Инструмент инвентаризации вида отсутствует в текущем MCP-каталоге.",
+                0,
+                0,
+                0,
+                "Сейчас инструмент чтения состава вида недоступен в запущенном rvt-mcp. Я не буду угадывать элементы по сведениям о виде. Перезапустите Revit и ассистента после установки custom-плагина.");
+        }
         var deterministicTool = MatchDeterministicRoute(latestUserMessage, toolNames);
         if (deterministicTool is not null)
         {
@@ -169,6 +191,20 @@ public sealed class ToolRouter
         }
 
         return null;
+    }
+
+    private static bool IsViewInventoryRequest(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        var text = Regex.Replace(message.ToLowerInvariant(), @"\s+", " ");
+        var mentionsView = Regex.IsMatch(
+            text,
+            @"\b(активн\w*|текущ\w*|открыт\w*|эт\w*)\s+вид\w*\b|\bна\s+вид\w*\b|\bвид\w*\s+(с\s+)?имен\w*\b");
+        var asksForContents = Regex.IsMatch(
+            text,
+            @"\b(какие|что|сколько|перечисли|покажи|состав|сводк\w*|статистик\w*)\b.{0,55}\b(элемент\w*|объект\w*|категори\w*|оборудован\w*|воздуховод\w*|труб\w*)\b") ||
+            Regex.IsMatch(text, @"\b(что|кто)\s+(есть|находится|расположен\w*|показан\w*|видно)\b");
+        return mentionsView && asksForContents;
     }
 
     private static int ReadInt(JsonElement element, string name) =>

@@ -24,18 +24,45 @@ public sealed class ToolRouterTests
         Assert.Equal(0, decision.BilledTokens);
     }
 
-    [Fact]
-    public async Task RoutesActiveViewQuestionToCurrentViewInfo()
+    [Theory]
+    [InlineData("Какие элементы есть на активном виде?")]
+    [InlineData("Что находится на активном виде?")]
+    [InlineData("Покажи элементы текущего вида")]
+    [InlineData("Перечисли объекты на открытом виде")]
+    [InlineData("Сколько элементов на этом виде?")]
+    [InlineData("Дай сводку по категориям на активном виде")]
+    [InlineData("Какой состав элементов текущего вида?")]
+    [InlineData("Что видно на этом виде из оборудования?")]
+    [InlineData("Какие категории находятся на активном виде?")]
+    [InlineData("Покажи воздуховоды и трубы на текущем виде")]
+    public async Task RoutesViewInventoryQuestionsToCustomSummary(string question)
     {
         using var http = new HttpClient(new FakeHandler(Response("revit_get_element_details")));
         var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
 
         var decision = await router.RouteAsync(
-            [new ChatMessage("user", "Что за элементы есть на активном виде?")],
-            [Tool("revit_get_element_details"), Tool("revit_get_current_view_info")]);
+            [new ChatMessage("user", question)],
+            [Tool("revit_get_current_view_info"), Tool("revit_custom_summarize_elements")]);
 
-        Assert.Equal("revit_get_current_view_info", decision.ToolName);
+        Assert.Equal("revit_custom_summarize_elements", decision.ToolName);
         Assert.Equal(0, decision.BilledTokens);
+    }
+
+    [Fact]
+    public async Task ViewInventoryQuestionDoesNotGuessWhenCustomToolIsUnavailable()
+    {
+        var handler = new FakeHandler(Response("revit_get_current_view_info"));
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", "Какие элементы есть на активном виде?")],
+            [Tool("revit_get_current_view_info")]);
+
+        Assert.Equal("answer", decision.Action);
+        Assert.Null(decision.ToolName);
+        Assert.Contains("не буду угадывать", decision.DirectResponse);
+        Assert.Equal(0, handler.RequestCount);
     }
 
     [Fact]
@@ -165,7 +192,45 @@ public sealed class ToolRouterTests
 
         Assert.True(capability.IsWrite);
         Assert.Equal("Изменение модели", capability.Category);
-        Assert.Contains("Создать", capability.Title);
+        Assert.Equal("Инструмент revit_create_wall_by_points", capability.Title);
+        Assert.Equal("Получить сведения.", capability.Description);
+    }
+
+    [Fact]
+    public void CurrentAssistantToolSurfaceHasCuratedReadableDescriptions()
+    {
+        string[] names =
+        [
+            "revit_list_available_targets", "revit_get_current_target", "revit_switch_target",
+            "revit_get_current_view_info", "revit_get_selected_elements", "revit_get_element_details",
+            "revit_get_element_parameters", "revit_get_type_parameters", "revit_list_worksets",
+            "revit_analyze_model_statistics", "revit_ai_element_filter", "revit_get_available_family_types",
+            "revit_get_material_quantities", "revit_get_element_relationships", "revit_list_groups",
+            "revit_get_group_members", "revit_list_assemblies", "revit_get_assembly_members",
+            "revit_list_project_parameters", "revit_custom_summarize_elements", "revit_custom_list_elements",
+            "revit_create_line_based_element", "revit_create_point_based_element",
+            "revit_create_surface_based_element", "revit_create_level", "revit_create_grid",
+            "revit_create_room", "revit_create_group_from_elements", "revit_operate_element",
+            "revit_color_elements", "revit_set_element_parameter_values", "revit_set_type_parameter_values",
+            "revit_change_element_type", "revit_assign_elements_to_workset", "revit_delete_element",
+            "revit_create_view", "revit_place_view_on_sheet", "revit_analyze_sheet_layout",
+            "revit_capture_view_image", "revit_set_view_crop", "revit_set_view_scale",
+            "revit_activate_view", "revit_show_element_in_view", "revit_analyze_usage_patterns",
+            "revit_batch_execute", "revit_purge_unused", "revit_send_code_to_revit",
+            "revit_set_project_info", "revit_show_message"
+        ];
+
+        var capabilities = ToolCapabilityCatalog.Describe(names.Select(Tool).ToArray());
+
+        Assert.Equal(49, capabilities.Count);
+        Assert.All(capabilities, capability =>
+        {
+            Assert.DoesNotContain("Инструмент revit_", capability.Title);
+            Assert.DoesNotContain("Выполняет операцию", capability.Description);
+            Assert.DoesNotContain("данные операции", capability.Description);
+            Assert.DoesNotContain("элемент элемент", capability.Title, StringComparison.OrdinalIgnoreCase);
+            Assert.False(string.IsNullOrWhiteSpace(capability.Example));
+        });
     }
 
     [Theory]

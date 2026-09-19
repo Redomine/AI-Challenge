@@ -35,7 +35,50 @@ public static class ToolCapabilityCatalog
             ["revit_get_type_parameters"] = Read("revit_get_type_parameters", "Прочитать параметры типа", "Возвращает параметры типа или семейства для указанного элемента.", "Параметры", ToolCapabilityScope.Element, "Какие параметры типа у элемента 5133824?"),
             ["revit_list_worksets"] = Read("revit_list_worksets", "Показать рабочие наборы", "Перечисляет рабочие наборы открытой модели и их состояние.", "Модель", ToolCapabilityScope.General, "Перечисли рабочие наборы модели"),
             ["revit_analyze_model_statistics"] = Read("revit_analyze_model_statistics", "Проанализировать статистику модели", "Собирает сводную статистику по категориям и элементам открытой модели.", "Модель", ToolCapabilityScope.General, "Покажи статистику модели"),
-            ["revit_ai_element_filter"] = Read("revit_ai_element_filter", "Найти элементы по условиям", "Фильтрует элементы модели по категории, параметрам и другим заданным условиям.", "Элементы", ToolCapabilityScope.Element, "Найди стены на текущем уровне")
+            ["revit_ai_element_filter"] = Read("revit_ai_element_filter", "Найти элементы по условиям", "Фильтрует элементы модели по категории, параметрам и другим заданным условиям.", "Элементы", ToolCapabilityScope.Element, "Найди стены на текущем уровне"),
+            ["revit_custom_summarize_elements"] = Read("revit_custom_summarize_elements", "Показать состав вида", "Считает элементы активного или указанного вида и возвращает компактную сводку по категориям.", "Активный вид", ToolCapabilityScope.View, "Какие элементы есть на активном виде?"),
+            ["revit_custom_list_elements"] = Read("revit_custom_list_elements", "Показать элементы категории на виде", "Возвращает небольшую постраничную выборку элементов одной категории из сводки вида.", "Элементы", ToolCapabilityScope.Element, "Покажи первую страницу воздуховодов на активном виде"),
+
+            ["revit_get_available_family_types"] = Read("revit_get_available_family_types", "Показать доступные типы семейств", "Перечисляет загруженные типы семейств, которые можно использовать при создании элементов.", "Семейства", ToolCapabilityScope.General, "Покажи доступные типы дверей"),
+            ["revit_get_material_quantities"] = Read("revit_get_material_quantities", "Рассчитать объёмы материалов", "Возвращает площади и объёмы материалов для указанных элементов.", "Материалы", ToolCapabilityScope.Element, "Покажи объёмы материалов элемента 5133824"),
+            ["revit_get_element_relationships"] = Read("revit_get_element_relationships", "Показать связи элемента", "Находит связанные уровни, группы, сборки, помещения и другие отношения указанного элемента.", "Элементы", ToolCapabilityScope.Element, "Покажи связи элемента 5133824"),
+            ["revit_list_groups"] = Read("revit_list_groups", "Показать группы модели", "Перечисляет группы модели и группы элементов узлов в проекте.", "Группы и сборки", ToolCapabilityScope.General, "Перечисли группы модели"),
+            ["revit_get_group_members"] = Read("revit_get_group_members", "Показать состав группы", "Возвращает элементы, входящие в указанную группу Revit.", "Группы и сборки", ToolCapabilityScope.Element, "Покажи состав группы 2099614"),
+            ["revit_list_assemblies"] = Read("revit_list_assemblies", "Показать сборки", "Перечисляет сборки Revit в открытом документе.", "Группы и сборки", ToolCapabilityScope.General, "Перечисли сборки проекта"),
+            ["revit_get_assembly_members"] = Read("revit_get_assembly_members", "Показать состав сборки", "Возвращает элементы, входящие в указанную сборку Revit.", "Группы и сборки", ToolCapabilityScope.Element, "Покажи состав сборки 123456"),
+            ["revit_list_project_parameters"] = Read("revit_list_project_parameters", "Показать параметры проекта", "Перечисляет параметры проекта, их типы данных и привязанные категории.", "Параметры", ToolCapabilityScope.General, "Перечисли параметры проекта"),
+
+            ["revit_create_line_based_element"] = Write("revit_create_line_based_element", "Создать стену по двум точкам", "Создаёт прямую стену между двумя точками в плане; координаты и высота задаются в миллиметрах.", "Создание элементов", ToolCapabilityScope.Element, "Создай стену от 0,0 до 6000,0 высотой 3000 мм"),
+            ["revit_create_point_based_element"] = Write("revit_create_point_based_element", "Разместить экземпляр семейства", "Размещает точечный экземпляр загруженного семейства, например дверь, окно или оборудование, по typeId и координатам.", "Создание элементов", ToolCapabilityScope.Element, "Размести тип 123456 в точке 3000,2000"),
+            ["revit_create_surface_based_element"] = Write("revit_create_surface_based_element", "Создать перекрытие или потолок", "Создаёт перекрытие или потолок по замкнутому контуру точек в миллиметрах.", "Создание элементов", ToolCapabilityScope.Element, "Создай перекрытие по прямоугольному контуру"),
+            ["revit_create_level"] = Write("revit_create_level", "Создать уровень", "Создаёт уровень на заданной абсолютной отметке в миллиметрах.", "Создание модели", ToolCapabilityScope.General, "Создай уровень +3600 мм с именем Этаж 2"),
+            ["revit_create_grid"] = Write("revit_create_grid", "Создать ось", "Создаёт прямую координационную ось между двумя точками в плане.", "Создание модели", ToolCapabilityScope.General, "Создай ось А от 0,0 до 0,12000"),
+            ["revit_create_room"] = Write("revit_create_room", "Разместить помещение", "Создаёт помещение в указанной точке уровня и при необходимости задаёт имя и номер.", "Создание модели", ToolCapabilityScope.Element, "Размести помещение 101 на уровне Этаж 1"),
+            ["revit_create_group_from_elements"] = Write("revit_create_group_from_elements", "Создать группу из элементов", "Объединяет два или более существующих элемента в новую группу модели.", "Группы и сборки", ToolCapabilityScope.Element, "Создай группу из элементов 12345 и 67890"),
+
+            ["revit_operate_element"] = Write("revit_operate_element", "Выделить или изменить отображение элементов", "Выделяет, скрывает, показывает, изолирует или окрашивает указанные элементы в текущем виде.", "Отображение элементов", ToolCapabilityScope.Element, "Изолируй элементы 12345 и 67890"),
+            ["revit_color_elements"] = Write("revit_color_elements", "Окрасить элементы по параметру", "Назначает графические цвета группам элементов в зависимости от значения выбранного параметра.", "Отображение элементов", ToolCapabilityScope.Element, "Окрась воздуховоды по параметру Система"),
+            ["revit_set_element_parameter_values"] = Write("revit_set_element_parameter_values", "Изменить параметр экземпляров", "Записывает одно значение параметра в несколько экземпляров элементов; значения длины принимаются в миллиметрах.", "Параметры", ToolCapabilityScope.Element, "Запиши значение Монтаж в Комментарии элементов 12345 и 67890"),
+            ["revit_set_type_parameter_values"] = Write("revit_set_type_parameter_values", "Изменить параметр типа", "Записывает значение параметра типа для указанных типов или типов выбранных элементов.", "Параметры", ToolCapabilityScope.Element, "Измени описание типа элемента 12345"),
+            ["revit_change_element_type"] = Write("revit_change_element_type", "Сменить тип элементов", "Назначает совместимый ElementType указанным элементам.", "Изменение элементов", ToolCapabilityScope.Element, "Смени тип элементов 12345 и 67890 на тип 24680"),
+            ["revit_assign_elements_to_workset"] = Write("revit_assign_elements_to_workset", "Назначить рабочий набор", "Переносит указанные элементы в пользовательский рабочий набор совместного проекта.", "Рабочие наборы", ToolCapabilityScope.Element, "Назначь элементы 12345 и 67890 рабочему набору ОВ"),
+            ["revit_delete_element"] = Write("revit_delete_element", "Удалить элементы", "Удаляет элементы по ElementId вместе с зависимостями, которые удаляет Revit; операция требует особенно внимательной проверки.", "Удаление", ToolCapabilityScope.Element, "Удали элемент 12345"),
+
+            ["revit_create_view"] = Write("revit_create_view", "Создать вид", "Создаёт план этажа или 3D-вид и при необходимости задаёт его имя.", "Виды", ToolCapabilityScope.View, "Создай план уровня Этаж 1"),
+            ["revit_place_view_on_sheet"] = Write("revit_place_view_on_sheet", "Разместить вид на листе", "Размещает указанный вид на существующем листе либо создаёт новый лист для размещения.", "Листы и виды", ToolCapabilityScope.View, "Размести вид 12345 на листе 67890"),
+            ["revit_analyze_sheet_layout"] = Read("revit_analyze_sheet_layout", "Проанализировать компоновку листа", "Читает границы основной надписи и размещённых видовых экранов в миллиметрах.", "Листы и виды", ToolCapabilityScope.View, "Проанализируй компоновку текущего листа"),
+            ["revit_capture_view_image"] = Read("revit_capture_view_image", "Сохранить изображение вида", "Экспортирует активный или указанный вид в PNG или JPEG внутри разрешённой локальной папки.", "Виды", ToolCapabilityScope.View, "Сохрани изображение активного вида"),
+            ["revit_set_view_crop"] = Write("revit_set_view_crop", "Настроить область обрезки вида", "Включает и изменяет область обрезки вида по границам или выбранным элементам.", "Виды", ToolCapabilityScope.View, "Подгони обрезку активного вида по элементам 12345 и 67890"),
+            ["revit_set_view_scale"] = Write("revit_set_view_scale", "Изменить масштаб вида", "Устанавливает знаменатель графического масштаба вида, например 50 для масштаба 1:50.", "Виды", ToolCapabilityScope.View, "Установи масштаб активного вида 1:50"),
+            ["revit_activate_view"] = Ui("revit_activate_view", "Открыть вид", "Делает указанный вид активным в интерфейсе Revit, не изменяя модель.", "Виды", ToolCapabilityScope.View, "Открой вид Координация"),
+            ["revit_show_element_in_view"] = Ui("revit_show_element_in_view", "Показать элементы на виде", "Открывает подходящий вид, выделяет указанные элементы и приближает их в интерфейсе Revit.", "Виды", ToolCapabilityScope.Element, "Покажи элемент 5133824 на виде"),
+
+            ["revit_analyze_usage_patterns"] = Read("revit_analyze_usage_patterns", "Показать статистику использования инструментов", "Анализирует локальную историю вызовов MCP-инструментов без изменения модели.", "Служебные операции", ToolCapabilityScope.General, "Покажи статистику использования инструментов"),
+            ["revit_batch_execute"] = Write("revit_batch_execute", "Выполнить пакет команд", "Последовательно выполняет несколько MCP-команд как один управляемый пакет с общей проверкой результатов.", "Служебные операции", ToolCapabilityScope.General, "Выполни подготовленный пакет команд"),
+            ["revit_purge_unused"] = Write("revit_purge_unused", "Найти или удалить неиспользуемые типы", "В безопасном режиме показывает, а по явной команде удаляет неиспользуемые типы загружаемых семейств.", "Очистка модели", ToolCapabilityScope.General, "Покажи, что можно очистить, без удаления"),
+            ["revit_send_code_to_revit"] = Write("revit_send_code_to_revit", "Выполнить C# в Revit", "Компилирует и выполняет произвольный C# внутри Revit; применяется только когда нет подходящего типизированного инструмента.", "Расширенные операции", ToolCapabilityScope.General, "Выполни согласованный C#-скрипт в Revit"),
+            ["revit_set_project_info"] = Write("revit_set_project_info", "Изменить сведения о проекте", "Записывает название, номер, клиента, адрес, статус или дату выпуска в сведения о проекте.", "Проект", ToolCapabilityScope.General, "Укажи номер проекта 2026-01"),
+            ["revit_show_message"] = Ui("revit_show_message", "Показать сообщение в Revit", "Открывает информационное окно TaskDialog в интерфейсе Revit.", "Интерфейс Revit", ToolCapabilityScope.General, "Покажи в Revit сообщение Проверка завершена")
         };
 
     public static bool TryDetectQuestion(string message, out ToolCapabilityScope scope)
@@ -102,7 +145,7 @@ public static class ToolCapabilityCatalog
             }
         }
         builder.AppendLine().AppendLine()
-            .Append("Перечень сформирован по текущему каталогу rvt-mcp. Читающие операции выполняются сразу; изменяющие — только по явной команде и после подтверждения.");
+            .Append("Перечень сформирован по текущему каталогу rvt-mcp. Операции без изменения модели выполняются сразу; изменяющие — только по явной команде и после подтверждения.");
         return builder.ToString();
     }
 
@@ -124,10 +167,10 @@ public static class ToolCapabilityCatalog
             : Regex.IsMatch(tool.Name, "element|parameter|family|type|selection", RegexOptions.IgnoreCase)
                 ? ToolCapabilityScope.Element
                 : ToolCapabilityScope.General;
-        var title = HumanizeName(tool.Name);
-        var description = isWrite
-            ? $"Выполняет операцию «{title.ToLowerInvariant()}» в Revit через rvt-mcp"
-            : $"Читает из Revit данные операции «{title.ToLowerInvariant()}» без изменения модели";
+        var title = $"Инструмент {tool.Name}";
+        var description = string.IsNullOrWhiteSpace(tool.Description)
+            ? "Для этого нового инструмента ещё не подготовлено проверенное русское описание"
+            : tool.Description.Trim().TrimEnd('.');
         return new ToolCapability(
             tool.Name,
             title,
@@ -135,11 +178,17 @@ public static class ToolCapabilityCatalog
             isWrite ? "Изменение модели" : CategoryFor(scope),
             scope,
             isWrite,
-            isWrite ? $"Выполни операцию «{title.ToLowerInvariant()}»" : $"{title}");
+            isWrite ? $"Вызови {tool.Name} после подтверждения" : $"Вызови {tool.Name}");
     }
 
     private static ToolCapability Read(string name, string title, string description, string category, ToolCapabilityScope scope, string example) =>
         new(name, title, description, category, scope, false, example);
+
+    private static ToolCapability Ui(string name, string title, string description, string category, ToolCapabilityScope scope, string example) =>
+        new(name, title, description, category, scope, false, example);
+
+    private static ToolCapability Write(string name, string title, string description, string category, ToolCapabilityScope scope, string example) =>
+        new(name, title, description, category, scope, true, example);
 
     private static bool IsRelevantWrite(ToolCapability item, ToolCapabilityScope scope) =>
         item.IsWrite && (item.Scope == scope || item.Scope == ToolCapabilityScope.General);
@@ -151,36 +200,4 @@ public static class ToolCapabilityCatalog
         _ => "Модель"
     };
 
-    private static string HumanizeName(string name)
-    {
-        var words = name.Replace("revit_", "", StringComparison.OrdinalIgnoreCase)
-            .Split('_', StringSplitOptions.RemoveEmptyEntries);
-        return string.Join(' ', words.Select(TranslateWord)) switch
-        {
-            "" => name,
-            var text => char.ToUpperInvariant(text[0]) + text[1..]
-        };
-    }
-
-    private static string TranslateWord(string word) => word.ToLowerInvariant() switch
-    {
-        "get" => "получить", "list" => "показать", "create" => "создать", "add" => "добавить",
-        "set" => "задать", "update" => "обновить", "modify" => "изменить", "delete" => "удалить",
-        "remove" => "удалить", "rename" => "переименовать", "move" => "переместить", "copy" => "копировать",
-        "view" => "вид", "element" => "элемент", "elements" => "элементы", "parameter" => "параметр",
-        "parameters" => "параметры", "family" => "семейство", "type" => "тип", "current" => "текущий",
-        "selected" => "выбранные", "info" => "сведения", "details" => "сведения", "model" => "модель",
-        "project" => "проект", "color" => "окрасить", "show" => "показать", "message" => "сообщение",
-        "point" => "точечный", "line" => "линейный", "surface" => "поверхностный", "based" => "элемент",
-        "place" => "разместить", "on" => "на", "sheet" => "лист", "activate" => "активировать",
-        "values" => "значения", "groups" => "группы", "group" => "группа", "operate" => "обработать",
-        "room" => "помещение", "layout" => "компоновка", "grid" => "ось", "scale" => "масштаб",
-        "members" => "состав", "available" => "доступные", "level" => "уровень", "crop" => "обрезка",
-        "material" => "материал", "quantities" => "объёмы", "purge" => "очистить", "unused" => "неиспользуемое",
-        "assign" => "назначить", "to" => "в", "workset" => "рабочий набор", "worksets" => "рабочие наборы",
-        "assembly" => "сборка", "assemblies" => "сборки", "relationships" => "связи", "target" => "сеанс",
-        "capture" => "сохранить", "image" => "изображение", "usage" => "использование", "patterns" => "статистика",
-        "batch" => "пакетно", "execute" => "выполнить", "change" => "изменить", "filter" => "фильтр",
-        _ => word
-    };
 }
