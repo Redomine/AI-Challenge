@@ -13,7 +13,8 @@ public sealed record ToolRouteDecision(
     string Reason,
     int PromptTokens,
     int CompletionTokens,
-    int BilledTokens);
+    int BilledTokens,
+    string? DirectResponse = null);
 
 public sealed class ToolRouter
 {
@@ -41,6 +42,17 @@ public sealed class ToolRouter
         var toolNames = tools.Select(tool => tool.Name).ToArray();
         var latestUserMessage = messages.LastOrDefault(message =>
             message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
+        if (ToolCapabilityCatalog.TryDetectQuestion(latestUserMessage, out var capabilityScope))
+        {
+            return new ToolRouteDecision(
+                "answer",
+                null,
+                "Вопрос о возможностях обработан по актуальному каталогу инструментов без LLM-вызова.",
+                0,
+                0,
+                0,
+                ToolCapabilityCatalog.BuildUserSummary(tools, capabilityScope));
+        }
         var deterministicTool = MatchDeterministicRoute(latestUserMessage, toolNames);
         if (deterministicTool is not null)
         {
@@ -52,9 +64,7 @@ public sealed class ToolRouter
                 0,
                 0);
         }
-        var catalogue = string.Join(
-            Environment.NewLine,
-            tools.Select(tool => $"- {tool.Name}: {tool.Description}"));
+        var catalogue = ToolCapabilityCatalog.BuildCompactRouterCatalogue(tools);
         var dialogue = string.Join(
             Environment.NewLine,
             messages.TakeLast(8).Select(message => $"{message.Role}: {message.Content}"));
@@ -63,9 +73,10 @@ public sealed class ToolRouter
             ["type"] = "object",
             ["properties"] = new Dictionary<string, object?>
             {
-                ["action"] = new { type = "string", @enum = new[] { "answer", "call_tool" } },
+                ["action"] = new { type = "string", @enum = new[] { "answer", "call_tool", "clarify" } },
                 ["tool"] = new { type = "string", @enum = toolNames },
-                ["reason"] = new { type = "string" }
+                ["reason"] = new { type = "string" },
+                ["clarification"] = new { type = "string" }
             },
             ["required"] = new[] { "action", "reason" }
         };
@@ -74,7 +85,7 @@ public sealed class ToolRouter
             new
             {
                 role = "system",
-                content = "Ты маршрутизатор инструментов. Выбери call_tool, если для ответа нужны актуальные данные или действие в Revit. Выбери answer для разговора, объяснения или данных, уже присутствующих в диалоге. Вопросы о названиях, назначении, параметрах или доступности инструментов отвечаются по переданному каталогу: для них всегда выбирай answer и никогда не вызывай инструмент. Слова 'команда' и 'вызов' сами по себе не означают просьбу выполнить действие. Не отвечай на задачу пользователя."
+                content = "Ты маршрутизатор инструментов. Выбери call_tool, если для ответа нужны актуальные данные Revit или пользователь явно просит выполнить однозначное действие. Выбери answer для разговора, объяснения или данных, уже присутствующих в диалоге. Выбери clarify, если возможна изменяющая модель операция, но неясны намерение, объект, действие или обязательное значение; сформулируй один короткий вопрос в clarification и не выбирай инструмент. Вопросы о названиях, назначении, параметрах или доступности инструментов всегда получают answer и никогда не вызывают инструмент. Слова 'команда', 'вызов', 'скрипт' и название инструмента сами по себе не означают просьбу выполнить действие. Не отвечай на задачу пользователя."
             },
             new
             {
@@ -117,19 +128,28 @@ public sealed class ToolRouter
         var action = arguments.GetProperty("action").GetString() ?? "answer";
         var toolName = arguments.TryGetProperty("tool", out var tool) ? tool.GetString() : null;
         var reason = arguments.TryGetProperty("reason", out var reasonElement) ? reasonElement.GetString() ?? "" : "";
+        var clarification = arguments.TryGetProperty("clarification", out var clarificationElement)
+            ? clarificationElement.GetString()
+            : null;
         if (action == "call_tool" && !toolNames.Contains(toolName, StringComparer.Ordinal))
         {
             throw new InvalidOperationException($"ToolRouter выбрал неизвестный инструмент '{toolName}'.");
         }
 
         var usage = root.GetProperty("usage");
+        if (action == "clarify" && string.IsNullOrWhiteSpace(clarification))
+        {
+            clarification = "Уточните, пожалуйста, какое именно изменение нужно выполнить, над каким объектом и с каким значением.";
+        }
+
         return new ToolRouteDecision(
             action,
-            toolName,
+            action == "call_tool" ? toolName : null,
             reason,
             ReadInt(usage, "prompt_tokens"),
             ReadInt(usage, "completion_tokens"),
-            ReadInt(usage, "total_tokens"));
+            ReadInt(usage, "total_tokens"),
+            action == "clarify" ? clarification : null);
     }
 
     private static string? MatchDeterministicRoute(string message, IReadOnlyCollection<string> toolNames)

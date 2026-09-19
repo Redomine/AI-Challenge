@@ -57,7 +57,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent
         var response = _toolProvider is not null && _llmClient is IToolCallingLlmClient toolClient
             ? await toolClient.GenerateWithToolsAsync(instructions, messages, _toolProvider, traces.Add, cancellationToken)
             : await _llmClient.GenerateAsync(instructions, messages, cancellationToken);
-        if (profile is not null)
+        if (profile is not null && !response.FinishReason.StartsWith("tool_router_", StringComparison.Ordinal))
         {
             response = await EnforceProfileAsync(profile, userMessage.Trim(), response, traces, cancellationToken);
         }

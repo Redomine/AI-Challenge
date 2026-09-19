@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ModelContextProtocol.Client;
 using DesignerAssistant.Models;
+using DesignerAssistant.Llm;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 
@@ -20,6 +21,7 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
     private readonly string _serverPath;
     private readonly Func<string, Task<bool>>? _confirmWriteAsync;
     private readonly HashSet<string> _discoveredWriteTools = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _discoveredReadTools = new(StringComparer.Ordinal);
     private McpClient? _client;
     private string _selectedTarget = "auto";
 
@@ -33,7 +35,9 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
 
     public async Task<string> CallAsync(string toolName, IReadOnlyDictionary<string, object?>? arguments = null, CancellationToken cancellationToken = default)
     {
-        if (!AllowedTools.Contains(toolName) && !_discoveredWriteTools.Contains(toolName))
+        if (!AllowedTools.Contains(toolName) &&
+            !_discoveredReadTools.Contains(toolName) &&
+            !_discoveredWriteTools.Contains(toolName))
         {
             throw new InvalidOperationException($"Инструмент '{toolName}' запрещён политикой read-only.");
         }
@@ -42,7 +46,7 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
         {
             return await CallCoreAsync(toolName, arguments, cancellationToken);
         }
-        catch (Exception) when (AllowedTools.Contains(toolName) && !cancellationToken.IsCancellationRequested)
+        catch (Exception) when ((AllowedTools.Contains(toolName) || _discoveredReadTools.Contains(toolName)) && !cancellationToken.IsCancellationRequested)
         {
             await ResetClientAsync();
             return await CallCoreAsync(toolName, arguments, cancellationToken);
@@ -61,11 +65,14 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
     {
         var tools = await (await GetClientAsync(cancellationToken)).ListToolsAsync(cancellationToken: cancellationToken);
         _discoveredWriteTools.Clear();
+        _discoveredReadTools.Clear();
         foreach (var tool in tools.Where(tool => !AllowedTools.Contains(tool.Name) && IsPermittedWriteTool(tool.Name)))
         {
-            _discoveredWriteTools.Add(tool.Name);
+            var definition = new ToolDefinition(tool.Name, tool.Description ?? tool.Name, tool.JsonSchema);
+            if (ToolCapabilityCatalog.IsWriteTool(definition)) _discoveredWriteTools.Add(tool.Name);
+            else _discoveredReadTools.Add(tool.Name);
         }
-        return tools.Where(tool => AllowedTools.Contains(tool.Name) || _discoveredWriteTools.Contains(tool.Name))
+        return tools.Where(tool => AllowedTools.Contains(tool.Name) || _discoveredReadTools.Contains(tool.Name) || _discoveredWriteTools.Contains(tool.Name))
             .Select(tool => new ToolDefinition(tool.Name, tool.Description ?? tool.Name, tool.JsonSchema))
             .ToArray();
     }

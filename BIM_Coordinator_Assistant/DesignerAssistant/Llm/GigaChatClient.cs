@@ -144,15 +144,23 @@ public sealed class GigaChatClient : IToolCallingLlmClient
             ExtractActiveProfile(instructions),
             cancellationToken);
         trace?.Invoke($"Tool route: {route.Action}; tool={route.ToolName ?? "none"}; reason={route.Reason}");
+        if (!string.IsNullOrWhiteSpace(route.DirectResponse))
+        {
+            return new LlmResponse(
+                route.DirectResponse,
+                $"tool_router_{route.Action}",
+                new TokenUsage(0, route.CompletionTokens, route.PromptTokens, route.PromptTokens, 0, route.CompletionTokens, route.BilledTokens, false));
+        }
         var totalPrompt = route.PromptTokens;
         var totalCompletion = route.CompletionTokens;
         var totalBilled = route.BilledTokens;
         var forcedTool = route.Action == "call_tool" ? route.ToolName : null;
+        var toolWasInvoked = false;
         for (var step = 0; step < 4; step++)
         {
-            object functionChoice = forcedTool is null
-                ? "auto"
-                : new Dictionary<string, string> { ["name"] = forcedTool };
+            object functionChoice = forcedTool is not null
+                ? new Dictionary<string, string> { ["name"] = forcedTool }
+                : toolWasInvoked || route.Action == "answer" ? "none" : "auto";
             using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
             {
                 Content = JsonContent.Create(new
@@ -194,6 +202,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient
                     await toolProvider.InvokeAsync(name, arguments, cancellationToken));
                 trace?.Invoke($"Tool result: {name} {FormatTraceResult(toolResult)}");
                 forcedTool = null;
+                toolWasInvoked = true;
                 conversation.Add(new Dictionary<string, object?>
                 {
                     ["role"] = "assistant", ["content"] = message.TryGetProperty("content", out var interim) ? interim.GetString() ?? "" : "",
@@ -209,7 +218,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient
             var content = message.TryGetProperty("content", out var contentElement) ? contentElement.GetString() : null;
             if (string.IsNullOrWhiteSpace(content)) throw new InvalidOperationException("GigaChat не вернул ни текст, ни вызов инструмента.");
             var suggestedTool = tools.FirstOrDefault(tool => content.Contains(tool.Name, StringComparison.Ordinal));
-            if (suggestedTool is not null && step < 3)
+            if (suggestedTool is not null && !toolWasInvoked && route.Action == "call_tool" && step < 3)
             {
                 conversation.Add(new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content });
                 conversation.Add(new Dictionary<string, object?>

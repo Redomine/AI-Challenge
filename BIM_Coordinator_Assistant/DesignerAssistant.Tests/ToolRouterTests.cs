@@ -51,10 +51,9 @@ public sealed class ToolRouterTests
 
         Assert.Equal("answer", decision.Action);
         Assert.Null(decision.ToolName);
-        using var request = JsonDocument.Parse(handler.LastRequestBody);
-        var routerInstructions = request.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
-        Assert.Contains("для них всегда выбирай answer", routerInstructions);
-        Assert.Contains("revit_delete_element", handler.LastRequestBody);
+        Assert.Equal(0, decision.BilledTokens);
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Contains("Получить сведения об элементе", decision.DirectResponse);
     }
 
     [Fact]
@@ -80,6 +79,112 @@ public sealed class ToolRouterTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => router.RouteAsync(
             [new ChatMessage("user", "Сделай что-нибудь")],
             [Tool("revit_get_element_details")]));
+    }
+
+    [Theory]
+    [InlineData("Перечисли свой функционал", "Сейчас мне доступны")]
+    [InlineData("Что ты умеешь?", "Сейчас мне доступны")]
+    [InlineData("Какие инструменты доступны?", "Сейчас мне доступны")]
+    [InlineData("Расскажи о своих возможностях", "Сейчас мне доступны")]
+    [InlineData("Покажи список инструментов", "Сейчас мне доступны")]
+    [InlineData("Какие у тебя есть возможности?", "Сейчас мне доступны")]
+    [InlineData("Чем ты можешь помочь в Revit?", "Сейчас мне доступны")]
+    [InlineData("Какой функционал тебе доступен?", "Сейчас мне доступны")]
+    [InlineData("Опиши доступные операции", "Сейчас мне доступны")]
+    [InlineData("Расскажи, какие команды ты поддерживаешь", "Сейчас мне доступны")]
+    [InlineData("На какие действия ты способен?", "Сейчас мне доступны")]
+    [InlineData("Что доступно из инструментов Revit?", "Сейчас мне доступны")]
+    [InlineData("Что можно сделать с этим видом?", "С активным видом")]
+    [InlineData("Что ты умеешь делать с активным видом?", "С активным видом")]
+    [InlineData("Какие инструменты доступны для текущего вида?", "С активным видом")]
+    [InlineData("Перечисли возможности работы с видом", "С активным видом")]
+    [InlineData("Какие операции над активным видом ты поддерживаешь?", "С активным видом")]
+    [InlineData("Чем ты можешь помочь на этом виде?", "С активным видом")]
+    [InlineData("Покажи функционал для текущего вида", "С активным видом")]
+    [InlineData("Что доступно для открытого вида через инструменты?", "С активным видом")]
+    [InlineData("Расскажи, что умеешь делать с видом Revit", "С активным видом")]
+    [InlineData("Какие у тебя есть возможности для этого вида?", "С активным видом")]
+    [InlineData("Что можно сделать с этим элементом через инструменты?", "С элементами")]
+    [InlineData("Что ты умеешь делать с элементами?", "С элементами")]
+    [InlineData("Какие инструменты доступны для выбранного объекта?", "С элементами")]
+    [InlineData("Перечисли возможности работы с элементом", "С элементами")]
+    [InlineData("Какие операции над этим объектом ты поддерживаешь?", "С элементами")]
+    [InlineData("Чем ты можешь помочь с выделенными элементами?", "С элементами")]
+    [InlineData("Покажи функционал для элемента Revit", "С элементами")]
+    [InlineData("Что доступно для этого объекта через твои инструменты?", "С элементами")]
+    [InlineData("Расскажи, что умеешь делать с параметрами элемента", "С элементами")]
+    [InlineData("Какие у тебя есть возможности для выбранных объектов?", "С элементами")]
+    [InlineData("Какие действия можно выполнить с элементом?", "С элементами")]
+    [InlineData("Опиши доступные инструменты для параметров объекта", "С элементами")]
+    public async Task CapabilityQuestionsAreAnsweredLocally(
+        string question,
+        string expectedHeading)
+    {
+        var handler = new FakeHandler(AnswerResponse());
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", question)],
+            [
+                Tool("revit_get_current_view_info"),
+                Tool("revit_get_selected_elements"),
+                Tool("revit_get_element_details"),
+                Tool("revit_get_element_parameters"),
+                Tool("revit_analyze_model_statistics")
+            ]);
+
+        Assert.Equal("answer", decision.Action);
+        Assert.Null(decision.ToolName);
+        Assert.Equal(0, decision.BilledTokens);
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Contains(expectedHeading, decision.DirectResponse);
+    }
+
+    [Fact]
+    public async Task AmbiguousWriteRequestReturnsClarification()
+    {
+        var handler = new FakeHandler(ClarifyResponse());
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", "Поменяй это")],
+            [Tool("revit_set_parameter")]);
+
+        Assert.Equal("clarify", decision.Action);
+        Assert.Null(decision.ToolName);
+        Assert.Contains("что изменить", decision.DirectResponse);
+    }
+
+    [Fact]
+    public void UnknownDiscoveredToolGetsReadableSafeDescription()
+    {
+        var capability = Assert.Single(ToolCapabilityCatalog.Describe(
+            [Tool("revit_create_wall_by_points")]));
+
+        Assert.True(capability.IsWrite);
+        Assert.Equal("Изменение модели", capability.Category);
+        Assert.Contains("Создать", capability.Title);
+    }
+
+    [Theory]
+    [InlineData("revit_get_group_members")]
+    [InlineData("revit_list_project_parameters")]
+    [InlineData("revit_analyze_sheet_layout")]
+    public void DiscoveredQueryToolsAreClassifiedAsReadOnly(string name)
+    {
+        Assert.False(ToolCapabilityCatalog.IsWriteTool(Tool(name)));
+    }
+
+    [Theory]
+    [InlineData("revit_create_room")]
+    [InlineData("revit_set_view_scale")]
+    [InlineData("revit_operate_element")]
+    [InlineData("revit_unrecognized_action")]
+    public void DiscoveredActionToolsRequireConfirmation(string name)
+    {
+        Assert.True(ToolCapabilityCatalog.IsWriteTool(Tool(name)));
     }
 
     private static ToolDefinition Tool(string name) => new(
@@ -126,12 +231,38 @@ public sealed class ToolRouterTests
         usage = new { prompt_tokens = 20, completion_tokens = 10, total_tokens = 30 }
     });
 
+    private static string ClarifyResponse() => JsonSerializer.Serialize(new
+    {
+        choices = new[]
+        {
+            new
+            {
+                message = new
+                {
+                    function_call = new
+                    {
+                        name = "route_tool_request",
+                        arguments = new
+                        {
+                            action = "clarify",
+                            reason = "Не определены объект и значение",
+                            clarification = "Уточните, что изменить и у какого элемента?"
+                        }
+                    }
+                }
+            }
+        },
+        usage = new { prompt_tokens = 20, completion_tokens = 10, total_tokens = 30 }
+    });
+
     private sealed class FakeHandler(string body) : HttpMessageHandler
     {
         public string LastRequestBody { get; private set; } = "";
+        public int RequestCount { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            RequestCount++;
             LastRequestBody = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
