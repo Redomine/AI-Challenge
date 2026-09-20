@@ -37,7 +37,18 @@
                 <div><h1>Диалог</h1><p>Профиль: @(_activeProfile?.Name ?? "не выбран")</p></div>
                 <button class="secondary" @onclick="ClearHistoryAsync" disabled="@_busy">Очистить диалог</button>
             </header>
-            <section class="chat-log" aria-live="polite">
+            <section class="task-flow" aria-label="Этапы задачи">
+                @foreach (var state in Enum.GetValues<TaskState>())
+                {
+                    <div class="task-stage @TaskStageClass(state)"><strong>@state</strong><span>@TaskStageCaption(state)</span></div>
+                }
+                <div class="pause-settings">
+                    <label><input type="checkbox" checked disabled /> После Planning</label>
+                    <label><input type="checkbox" @bind="_pauseAfterExecution" disabled="@TaskIsActive" /> После Execution</label>
+                    <label><input type="checkbox" @bind="_pauseAfterValidation" disabled="@TaskIsActive" /> После Validation</label>
+                </div>
+            </section>
+            <section class="chat-log @(Session.History.Count == 0 ? "empty" : "")" aria-live="polite">
                 @if (Session.History.Count == 0)
                 {
                     <div class="empty-chat"><h2>Новый диалог</h2><p>Опишите задачу по модели, плагину или скрипту.</p></div>
@@ -59,7 +70,14 @@
                 <textarea @bind="_message" @bind:event="oninput" placeholder="Сообщение ассистенту" rows="3" disabled="@_busy"></textarea>
                 <div class="composer-actions">
                     <span>@(_lastUsage ?? "Enter в поле переносит строку")</span>
-                    <button class="primary" @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_message))">Отправить</button>
+                    @if (Session.IsTaskPaused && !Session.AwaitingPlanApproval)
+                    {
+                        <button class="primary" @onclick="ContinueTaskAsync" disabled="@_busy">Продолжить</button>
+                    }
+                    else
+                    {
+                        <button class="primary" @onclick="SendAsync" disabled="@(_busy || TaskIsActive || string.IsNullOrWhiteSpace(_message))">Отправить</button>
+                    }
                 </div>
             </footer>
         }
@@ -136,11 +154,24 @@
     </div>
 }
 
+@if (Session.AwaitingPlanApproval && Session.CurrentTask is not null)
+{
+    <div class="modal-backdrop">
+        <section class="confirmation" role="dialog" aria-modal="true" aria-labelledby="plan-title">
+            <h2 id="plan-title">Согласование плана</h2>
+            <p>Агент не перейдёт к выполнению, пока вы не согласуете этот план.</p>
+            <pre>@Session.CurrentTask.Plan</pre>
+            <div><button class="secondary" @onclick="CancelTask" disabled="@_busy">Отклонить</button><button class="primary" @onclick="ApprovePlanAsync" disabled="@_busy">Согласовать и продолжить</button></div>
+        </section>
+    </div>
+}
+
 @code {
     private string _section = "chat";
     private string _message = "";
     private string? _error, _notice, _lastUsage;
     private bool _ready, _busy, _isNewProfile = true;
+    private bool _pauseAfterExecution, _pauseAfterValidation;
     private UserProfile? _activeProfile, _editingProfile;
     private UserProfileDraft _profileDraft = new();
     private IReadOnlyList<UserProfile> _profiles = [];
@@ -165,10 +196,57 @@
     {
         var text = _message.Trim(); if (text.Length == 0) return;
         _message = ""; _busy = true; _notice = null;
-        try { var response = await Session.AskAsync(text); _lastToolTraces = response.ToolTraces ?? []; _lastUsage = $"Отправлено ≈{response.SentHistoryTokens:N0} токенов"; }
+        try
+        {
+            await Session.StartTaskAsync(text, new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
+            UpdateTaskMetrics();
+        }
         catch (Exception e) { _notice = e.Message; }
         finally { _busy = false; }
     }
+
+    private async Task ApprovePlanAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.ApprovePlanAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ContinueTaskAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.ContinueTaskAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private void CancelTask() { Session.CancelTask(); _notice = "Задача отменена на стадии планирования."; }
+    private bool TaskIsActive => Session.CurrentTask is { State: not TaskState.Done };
+    private void UpdateTaskMetrics()
+    {
+        var response = Session.LastTaskResponse;
+        if (response is null || Session.CurrentTask is null) return;
+        _lastToolTraces = response.ToolTraces ?? [];
+        _lastUsage = $"Этап: {Session.CurrentTask.State}; отправлено ≈{response.SentHistoryTokens:N0} токенов";
+    }
+
+    private string TaskStageClass(TaskState state)
+    {
+        var current = Session.CurrentTask?.State;
+        if (current is null) return "";
+        if (state == current) return "current";
+        return state < current ? "complete" : "";
+    }
+
+    private static string TaskStageCaption(TaskState state) => state switch
+    {
+        TaskState.Planning => "План",
+        TaskState.Execution => "Выполнение",
+        TaskState.Validation => "Проверка",
+        TaskState.Done => "Готово",
+        _ => ""
+    };
 
     private async Task ClearHistoryAsync() { await Session.ClearHistoryAsync(); _notice = "Диалог очищен."; }
     private async Task CompleteTaskAsync() { await Session.CompleteTaskAsync(); _memory = await Session.GetMemoryAsync(); _notice = "Рабочая память очищена."; }

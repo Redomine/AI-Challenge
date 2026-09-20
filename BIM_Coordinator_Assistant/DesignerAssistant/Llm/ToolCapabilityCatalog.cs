@@ -89,14 +89,14 @@ public static class ToolCapabilityCatalog
         var text = Regex.Replace(message.ToLowerInvariant(), @"\s+", " ");
         var hasCapabilityNoun = Regex.IsMatch(
             text,
-            @"\b(функционал\w*|возможност\w*|инструмент\w*|команд\w*|операци\w*|действи\w*)\b");
+            @"\b(функционал\w*|возможност\w*|инструмент\w*|команд\w*|операци\w*|действи(?:е|я|й|ем|ю|ям|ями|ях))\b");
         var hasInquiryMarker = Regex.IsMatch(
             text,
             @"\b(что|какие|какой|чем|перечисли|покажи|опиши|расскажи|названи\w*|доступн\w*|есть|имеются|поддержива\w*)\b");
         var asksAboutCapability =
             hasCapabilityNoun && hasInquiryMarker ||
             Regex.IsMatch(text, @"\b(что|какие|какой|чем)\b.{0,50}\b(умеешь|можешь|можно|доступн\w*|поддерживаешь|способен)\b") ||
-            Regex.IsMatch(text, @"\b(перечисли|покажи|опиши|расскажи)\b.{0,50}\b(функционал\w*|возможност\w*|инструмент\w*|команд\w*|операци\w*|действи\w*)\b") ||
+            Regex.IsMatch(text, @"\b(перечисли|покажи|опиши|расскажи)\b.{0,50}\b(функционал\w*|возможност\w*|инструмент\w*|команд\w*|операци\w*|действи(?:е|я|й|ем|ю|ям|ями|ях))\b") ||
             Regex.IsMatch(text, @"\b(функционал\w*|возможност\w*|инструмент\w*)\b.{0,35}\b(есть|доступн\w*|имеются|поддержива\w*)\b") ||
             Regex.IsMatch(text, @"\bчто\s+ты\s+умеешь\b|\bтвои\s+возможности\b|\bсписок\s+инструмент\w*\b");
         if (!asksAboutCapability) return false;

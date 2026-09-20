@@ -12,6 +12,7 @@ public sealed class AssistantSession : IAsyncDisposable
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private DesignAssistantAgent? _agent;
+    private TaskWorkflow? _workflow;
     private RevitMcpClient? _revit;
     private TaskCompletionSource<bool>? _confirmation;
 
@@ -20,6 +21,10 @@ public sealed class AssistantSession : IAsyncDisposable
     public event Action? Changed;
     public string? PendingTransaction { get; private set; }
     public AppOptions? Options { get; private set; }
+    public TaskContext? CurrentTask => _workflow?.Context;
+    public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
+    public bool IsTaskPaused => _workflow?.IsPaused == true;
+    public AgentResponse? LastTaskResponse => _workflow?.LastResponse;
 
     public IReadOnlyList<ChatMessage> History => _agent?.GetHistory() ?? [];
 
@@ -43,10 +48,39 @@ public sealed class AssistantSession : IAsyncDisposable
         _revit = new RevitMcpClient(confirmWriteAsync: ConfirmTransactionAsync);
         _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, _revit, profiles);
         await _agent.InitializeAsync(cancellationToken);
+        _workflow = new TaskWorkflow(_agent);
     }
 
     public Task<AgentResponse> AskAsync(string message, CancellationToken cancellationToken = default) =>
         Agent.AskAsync(message, cancellationToken);
+
+    public async Task StartTaskAsync(
+        string message,
+        TaskPauseOptions pauseOptions,
+        CancellationToken cancellationToken = default)
+    {
+        Workflow.PauseOptions = pauseOptions;
+        await Workflow.StartAsync(message, cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task ApprovePlanAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.ApprovePlanAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task ContinueTaskAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.ContinueAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public void CancelTask()
+    {
+        Workflow.Cancel();
+        Changed?.Invoke();
+    }
 
     public Task<MemorySnapshot> GetMemoryAsync(CancellationToken cancellationToken = default) =>
         Agent.GetMemoryAsync(cancellationToken);
@@ -102,5 +136,6 @@ public sealed class AssistantSession : IAsyncDisposable
     }
 
     private DesignAssistantAgent Agent => _agent ?? throw new InvalidOperationException("Сессия не инициализирована.");
+    private TaskWorkflow Workflow => _workflow ?? throw new InvalidOperationException("Машина состояний не инициализирована.");
     private RevitMcpClient Revit => _revit ?? throw new InvalidOperationException("Сессия Revit не инициализирована.");
 }

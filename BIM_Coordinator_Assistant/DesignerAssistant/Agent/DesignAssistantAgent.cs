@@ -5,7 +5,7 @@ using DesignerAssistant.Storage;
 
 namespace DesignerAssistant.Agent;
 
-public sealed class DesignAssistantAgent : IDesignAssistantAgent
+public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunner
 {
     private readonly ILlmClient _llmClient;
     private readonly IChatHistoryStore _historyStore;
@@ -67,6 +67,60 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent
         var fullCount = await _llmClient.CountTextTokensAsync(_history.Select(message => message.Content).ToArray(), cancellationToken);
         var sentCount = await _llmClient.CountTextTokensAsync(messages.Select(message => message.Content).Append(response.Content).ToArray(), cancellationToken);
         return new AgentResponse(response, fullCount.TotalTokens, fullCount.IsEstimated, sentCount.TotalTokens, traces);
+    }
+
+    public async Task<AgentResponse> PlanTaskAsync(
+        string query,
+        string? previousExecution = null,
+        CancellationToken cancellationToken = default)
+    {
+        var toolCatalogue = await BuildPlanningToolCatalogueAsync(cancellationToken);
+        var stageInstructions = """
+            Ты находишься только на стадии PLANNING. Составь конкретный нумерованный план выполнения запроса.
+            Не выполняй пункты плана, не вызывай инструменты и не утверждай, что задача уже решена.
+            План будет показан пользователю для обязательного согласования.
+            Используй только инструменты из TOOL_CATALOGUE и называй их точными техническими именами.
+            Учитывай обязательные аргументы и типы из JSON-сигнатуры каждого выбранного инструмента.
+            Если подходящего инструмента нет, прямо укажи это вместо выдумывания API, методов или скриптов.
+            """;
+        var revision = string.IsNullOrWhiteSpace(previousExecution)
+            ? ""
+            : $"\n\nПредыдущее выполнение потребовало пересмотра плана:\n{previousExecution}";
+        var planningInput = $"{query}{revision}\n\n[TOOL_CATALOGUE]\n{toolCatalogue}\n[/TOOL_CATALOGUE]";
+        return await RunStageAsync(
+            planningInput,
+            stageInstructions,
+            useTools: false,
+            addUserMessage: true,
+            cancellationToken,
+            storedUserMessage: query);
+    }
+
+    public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+    {
+        var stageInstructions = """
+            Ты находишься только на стадии EXECUTION. Выполни согласованный план в его пределах.
+            Используй доступные инструменты, когда они необходимы. Не проводи финальную валидацию.
+            Если план объективно нельзя выполнить и его необходимо пересмотреть, начни ответ с [REPLAN] и объясни причину.
+            Иначе начни ответ с [EXECUTED] и затем сообщи фактический результат выполнения.
+            """;
+        var validationFeedback = string.IsNullOrWhiteSpace(context.ValidationResult)
+            ? ""
+            : $"\n\n[VALIDATION_FEEDBACK]\n{context.ValidationResult}\n[/VALIDATION_FEEDBACK]";
+        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN]\n{context.Plan}\n[/APPROVED_PLAN]{validationFeedback}";
+        return RunStageAsync(input, stageInstructions, useTools: true, addUserMessage: false, cancellationToken);
+    }
+
+    public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+    {
+        var stageInstructions = """
+            Ты находишься только на стадии VALIDATION. Проверь результат выполнения относительно запроса и согласованного плана.
+            Не выполняй задачу заново и не вызывай инструменты.
+            Если результат достаточен, начни ответ строго с [PASS].
+            Если нужны исправления, начни ответ строго с [FAIL] и перечисли конкретные дефекты для следующего выполнения.
+            """;
+        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN]\n{context.Plan}\n[/APPROVED_PLAN]\n\n[EXECUTION_RESULT]\n{context.ExecutionResult}\n[/EXECUTION_RESULT]";
+        return RunStageAsync(input, stageInstructions, useTools: false, addUserMessage: false, cancellationToken);
     }
 
     public IReadOnlyList<ChatMessage> GetHistory() { EnsureInitialized(); return _history.ToArray(); }
@@ -135,6 +189,56 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent
         var working = await _memoryStore.LoadAsync(MemoryLayer.Working, cancellationToken: cancellationToken);
         static string Lines(IEnumerable<MemoryEntry> entries) => string.Join(Environment.NewLine, entries.Select(entry => $"- {entry.Key}: {entry.Value} [source={entry.Source}; status={entry.Status}]"));
         return $"[LONG_TERM_MEMORY]\n{Lines(longTerm)}\n[/LONG_TERM_MEMORY]\n\n[WORKING_MEMORY task=current]\n{Lines(working)}\n[/WORKING_MEMORY]";
+    }
+
+    private async Task<string> BuildPlanningToolCatalogueAsync(CancellationToken cancellationToken)
+    {
+        if (_toolProvider is null) return "Инструменты не подключены.";
+
+        var tools = await _toolProvider.GetToolsAsync(cancellationToken);
+        if (tools.Count == 0) return "Доступных инструментов нет.";
+
+        var rules = """
+            Правила использования каталога:
+            - перед включением инструмента в план проверь его JSON-сигнатуру;
+            - перечисли источник каждого обязательного аргумента и не подставляй пустые или предполагаемые значения;
+            - не используй инструменты, которых нет в этом каталоге;
+            - если подходящего инструмента нет, прямо сообщи об этом пользователю вместо выдумывания API, метода или скрипта.
+            """;
+        var entries = string.Join(
+            Environment.NewLine + Environment.NewLine,
+            tools.Select(tool =>
+                $"Инструмент: {tool.Name}\nНазначение: {tool.Description}\nJSON-сигнатура: {tool.Parameters.GetRawText()}"));
+        return $"{rules}\n\n{entries}";
+    }
+
+    private async Task<AgentResponse> RunStageAsync(
+        string input,
+        string stageInstructions,
+        bool useTools,
+        bool addUserMessage,
+        CancellationToken cancellationToken,
+        string? storedUserMessage = null)
+    {
+        EnsureInitialized();
+        var profile = await _profileStore.LoadAsync(cancellationToken);
+        var instructions = $"{await BuildInstructionsAsync(profile, cancellationToken)}\n\n[TASK_STATE_RULES]\n{stageInstructions}\n[/TASK_STATE_RULES]";
+        var messages = _history.TakeLast(_recentMessageCount).ToList();
+        messages.Add(new ChatMessage("user", input));
+        var traces = new List<string>();
+        var response = useTools && _toolProvider is not null && _llmClient is IToolCallingLlmClient toolClient
+            ? await toolClient.GenerateWithToolsAsync(instructions, messages, _toolProvider, traces.Add, cancellationToken)
+            : await _llmClient.GenerateAsync(instructions, messages, cancellationToken);
+
+        var stored = new List<ChatMessage>();
+        if (addUserMessage) stored.Add(new ChatMessage("user", storedUserMessage ?? input));
+        stored.Add(new ChatMessage("assistant", response.Content));
+        _history.AddRange(stored);
+        await _historyStore.AppendAsync(stored, cancellationToken);
+
+        var fullCount = await _llmClient.CountTextTokensAsync(_history.Select(message => message.Content).ToArray(), cancellationToken);
+        var sentCount = await _llmClient.CountTextTokensAsync(messages.Select(message => message.Content).Append(response.Content).ToArray(), cancellationToken);
+        return new AgentResponse(response, fullCount.TotalTokens, fullCount.IsEstimated, sentCount.TotalTokens, traces);
     }
 
     private async Task<string> BuildInstructionsAsync(UserProfile? profile, CancellationToken cancellationToken)

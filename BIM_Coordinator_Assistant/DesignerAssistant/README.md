@@ -14,6 +14,8 @@ dotnet run --project '.\DesignerAssistant.csproj'
 
 Ярлык `Запустить BIM-помощника.lnk` в папке `BIM_Coordinator_Assistant`
 запускает веб-интерфейс и оставляет окно сервера открытым.
+Ярлык `Выключить BIM-помощника.lnk` рядом с ним завершает только процессы
+`DesignerAssistant.Web`, запущенные из этого проекта.
 
 Должна быть зарегистрирована переменная `GIGACHAT_AUTH_KEY`. Значения по
 умолчанию: scope `GIGACHAT_API_PERS`, модель `GigaChat-2`, токенизатор `GigaChat`.

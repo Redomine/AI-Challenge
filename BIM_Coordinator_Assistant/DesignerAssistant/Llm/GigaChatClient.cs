@@ -233,7 +233,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient
             return new LlmResponse(content.Trim(), finishReason, new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false));
         }
 
-        throw new InvalidOperationException("GigaChat превысил лимит последовательных вызовов инструментов (4).");
+        throw new ToolCallLimitExceededException(4);
     }
 
     private static string? ExtractActiveProfile(string instructions)

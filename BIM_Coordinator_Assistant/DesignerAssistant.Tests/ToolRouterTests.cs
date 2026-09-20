@@ -122,6 +122,34 @@ public sealed class ToolRouterTests
     }
 
     [Fact]
+    public async Task RoutesWorkflowExecutionByOriginalQueryInsteadOfPlanWording()
+    {
+        var handler = new FakeHandler(Response("revit_get_element_details"));
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+        var workflowMessage = """
+            [QUERY]
+            У меня в Revit сейчас выделены элементы. Запиши им в параметр "Комментарии" слово "Тест"
+            [/QUERY]
+
+            [APPROVED_PLAN]
+            1. Получим выделенные элементы.
+            2. Проверим, что выделенные элементы действительно существуют.
+            3. Запишем значение параметра.
+            [/APPROVED_PLAN]
+            """;
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", workflowMessage)],
+            [Tool("revit_get_selected_elements"), Tool("revit_set_element_parameter_values")]);
+
+        Assert.Equal("call_tool", decision.Action);
+        Assert.Equal("revit_get_selected_elements", decision.ToolName);
+        Assert.Null(decision.DirectResponse);
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Fact]
     public async Task RejectsToolOutsideCurrentMcpCatalogue()
     {
         using var http = new HttpClient(new FakeHandler(Response("revit_send_code_to_revit")));

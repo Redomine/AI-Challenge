@@ -42,6 +42,7 @@ public sealed class ToolRouter
         var toolNames = tools.Select(tool => tool.Name).ToArray();
         var latestUserMessage = messages.LastOrDefault(message =>
             message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
+        latestUserMessage = ExtractTaskQuery(latestUserMessage);
         if (ToolCapabilityCatalog.TryDetectQuestion(latestUserMessage, out var capabilityScope))
         {
             return new ToolRouteDecision(
@@ -183,6 +184,17 @@ public sealed class ToolRouter
             ReadInt(usage, "completion_tokens"),
             ReadInt(usage, "total_tokens"),
             action == "clarify" ? clarification : null);
+    }
+
+    private static string ExtractTaskQuery(string message)
+    {
+        const string startTag = "[QUERY]";
+        const string endTag = "[/QUERY]";
+        var start = message.IndexOf(startTag, StringComparison.Ordinal);
+        if (start < 0) return message;
+        start += startTag.Length;
+        var end = message.IndexOf(endTag, start, StringComparison.Ordinal);
+        return end < 0 ? message : message[start..end].Trim();
     }
 
     private static string? MatchDeterministicRoute(string message, IReadOnlyCollection<string> toolNames)
