@@ -45,8 +45,9 @@ public sealed class AssistantSession : IAsyncDisposable
         var history = new SqliteChatHistoryStore(Options.DatabasePath);
         var memory = new SqliteMemoryStore(Options.DatabasePath);
         var profiles = new SqliteUserProfileStore(Options.DatabasePath);
+        var invariants = new SqliteInvariantStore(Options.DatabasePath);
         _revit = new RevitMcpClient(confirmWriteAsync: ConfirmTransactionAsync);
-        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, _revit, profiles);
+        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, _revit, profiles, invariants);
         await _agent.InitializeAsync(cancellationToken);
         _workflow = new TaskWorkflow(_agent);
     }
@@ -99,6 +100,12 @@ public sealed class AssistantSession : IAsyncDisposable
 
     public Task DeleteProfileAsync(CancellationToken cancellationToken = default) =>
         Agent.DeleteProfileAsync(cancellationToken);
+
+    public Task<string> GetInvariantsAsync(CancellationToken cancellationToken = default) =>
+        Agent.GetInvariantsAsync(cancellationToken);
+
+    public Task SaveInvariantsAsync(string text, CancellationToken cancellationToken = default) =>
+        Agent.SaveInvariantsAsync(text, cancellationToken);
 
     public Task ClearHistoryAsync(CancellationToken cancellationToken = default) =>
         Agent.ClearHistoryAsync(cancellationToken);

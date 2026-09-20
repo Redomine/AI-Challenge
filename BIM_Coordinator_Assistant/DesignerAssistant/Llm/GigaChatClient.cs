@@ -8,7 +8,7 @@ using DesignerAssistant.Models;
 
 namespace DesignerAssistant.Llm;
 
-public sealed class GigaChatClient : IToolCallingLlmClient
+public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
 {
     private const string AuthUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
     private const string ChatUrl = "https://api.giga.chat/v1/chat/completions";
@@ -31,7 +31,21 @@ public sealed class GigaChatClient : IToolCallingLlmClient
     public async Task<LlmResponse> GenerateAsync(
         string instructions,
         IReadOnlyCollection<ChatMessage> messages,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await GenerateAsync(instructions, messages, null, cancellationToken);
+
+    public async Task<LlmResponse> GenerateStructuredAsync(
+        string instructions,
+        IReadOnlyCollection<ChatMessage> messages,
+        JsonElement schema,
+        CancellationToken cancellationToken = default) =>
+        await GenerateAsync(instructions, messages, schema, cancellationToken);
+
+    private async Task<LlmResponse> GenerateAsync(
+        string instructions,
+        IReadOnlyCollection<ChatMessage> messages,
+        JsonElement? responseSchema,
+        CancellationToken cancellationToken)
     {
         await EnsureAccessTokenAsync(cancellationToken);
 
@@ -61,14 +75,23 @@ public sealed class GigaChatClient : IToolCallingLlmClient
                 content = message.Content
             });
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
-        {
-            Content = JsonContent.Create(new
+        object requestBody = responseSchema is null
+            ? new
             {
                 model = _options.Model,
                 messages = requestMessages,
                 max_tokens = _options.MaxOutputTokens
-            })
+            }
+            : new
+            {
+                model = _options.Model,
+                messages = requestMessages,
+                max_tokens = _options.MaxOutputTokens,
+                response_format = new { type = "json_schema", schema = responseSchema.Value, strict = true }
+            };
+        using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
+        {
+            Content = JsonContent.Create(requestBody)
         };
         request.Headers.Authorization =
             new AuthenticationHeaderValue("Bearer", _accessToken);
@@ -86,17 +109,16 @@ public sealed class GigaChatClient : IToolCallingLlmClient
         using var document = JsonDocument.Parse(responseBody);
         var root = document.RootElement;
         var choice = root.GetProperty("choices")[0];
-        var content = choice
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString();
+        var message = choice.GetProperty("message");
+        var content = message.GetProperty("content").GetString();
         var finishReason = choice.TryGetProperty("finish_reason", out var finishReasonElement)
             ? finishReasonElement.GetString() ?? "не указана"
             : "не указана";
 
         if (string.IsNullOrWhiteSpace(content))
         {
-            throw new InvalidOperationException("В ответе GigaChat не найден текст модели.");
+            throw new InvalidOperationException(
+                $"В ответе GigaChat не найден текст модели. finish_reason={finishReason}; message={message.GetRawText()}");
         }
 
         var usage = root.GetProperty("usage");

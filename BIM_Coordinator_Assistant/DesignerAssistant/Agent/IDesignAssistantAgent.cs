@@ -13,6 +13,8 @@ public interface IDesignAssistantAgent
     Task SaveProfileAsync(UserProfile profile, CancellationToken cancellationToken = default);
     Task<bool> SelectProfileAsync(string name, CancellationToken cancellationToken = default);
     Task DeleteProfileAsync(CancellationToken cancellationToken = default);
+    Task<string> GetInvariantsAsync(CancellationToken cancellationToken = default);
+    Task SaveInvariantsAsync(string text, CancellationToken cancellationToken = default);
     Task RememberAsync(MemoryLayer layer, string key, string value, CancellationToken cancellationToken = default);
     Task ClearHistoryAsync(CancellationToken cancellationToken = default);
     Task CompleteTaskAsync(CancellationToken cancellationToken = default);

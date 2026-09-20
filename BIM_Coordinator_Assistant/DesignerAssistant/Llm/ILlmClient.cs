@@ -23,3 +23,12 @@ public interface IToolCallingLlmClient : ILlmClient
         Action<string>? trace = null,
         CancellationToken cancellationToken = default);
 }
+
+public interface IStructuredLlmClient : ILlmClient
+{
+    Task<LlmResponse> GenerateStructuredAsync(
+        string instructions,
+        IReadOnlyCollection<ChatMessage> messages,
+        System.Text.Json.JsonElement schema,
+        CancellationToken cancellationToken = default);
+}

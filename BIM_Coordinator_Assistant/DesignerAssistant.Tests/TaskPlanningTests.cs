@@ -47,7 +47,12 @@ public sealed class TaskPlanningTests
         {
             Requests.Add((instructions, messages));
             return Task.FromResult(new LlmResponse(
-                "1. Вызвать revit_get_selected_elements.\n2. Вызвать revit_set_element_parameter_values.",
+                """
+                {"summary":"Заполнить комментарии","steps":[
+                  {"action":"Получить выбранные элементы","tool":"revit_get_selected_elements","arguments":{},"argumentSources":{}},
+                  {"action":"Записать комментарий","tool":"revit_set_element_parameter_values","arguments":{"parameterName":"Комментарии","value":"Тест","valueType":"string"},"argumentSources":{"elementIds":"результат шага 1"}}
+                ]}
+                """,
                 "stop",
                 new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)));
         }

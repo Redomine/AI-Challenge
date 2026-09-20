@@ -16,6 +16,7 @@
             <button class="@NavClass("chat")" @onclick='@(() => OpenSection("chat"))'>Чат</button>
             <button class="@NavClass("profiles")" @onclick="OpenProfilesAsync">Профили</button>
             <button class="@NavClass("prompt")" @onclick='@(() => OpenSection("prompt"))'>Базовый prompt</button>
+            <button class="@NavClass("invariants")" @onclick="OpenInvariantsAsync">Инварианты</button>
             <button class="@NavClass("memory")" @onclick="OpenMemoryAsync">Память</button>
             <button class="@NavClass("revit")" @onclick="OpenRevitAsync">Revit</button>
         </nav>
@@ -26,7 +27,7 @@
         </div>
     </aside>
 
-    <main class="workspace">
+    <main class="workspace @(_section == "chat" ? "chat-workspace" : "")">
         @if (!_ready)
         {
             <section class="empty-state"><h1>BIM Assistant</h1><p>@(_error ?? "Подготавливаю рабочую сессию...")</p></section>
@@ -56,7 +57,7 @@
                 @foreach (var message in Session.History)
                 {
                     <article class="message @message.Role">
-                        <span>@(message.Role == "user" ? "Вы" : "Ассистент")</span>
+                        <span>@MessageLabel(message)</span>
                         <p>@message.Content</p>
                     </article>
                 }
@@ -118,6 +119,13 @@
                 <textarea readonly aria-label="Базовый системный prompt">@DesignerAssistantPrompt.Text</textarea>
             </section>
         }
+        else if (_section == "invariants")
+        {
+            <header class="workspace-header"><div><h1>Инварианты</h1><p>Глобальные правила с наивысшим приоритетом</p></div><button class="primary" @onclick="SaveInvariantsAsync" disabled="@_busy">Сохранить</button></header>
+            <section class="invariants-view">
+                <textarea @bind="_invariants" @bind:event="oninput" aria-label="Глобальные инварианты" placeholder="Введите правила, которые ассистент не имеет права нарушать"></textarea>
+            </section>
+        }
         else if (_section == "memory")
         {
             <header class="workspace-header"><div><h1>Память</h1><p>Данные, которые агент добавляет в контекст</p></div><button class="secondary" @onclick="CompleteTaskAsync">Завершить задачу</button></header>
@@ -138,7 +146,7 @@
                 }
             </section>
         }
-        @if (!string.IsNullOrWhiteSpace(_notice)) { <div class="notice">@_notice</div> }
+        @if (!string.IsNullOrWhiteSpace(_notice)) { <div class="notice"><span>@_notice</span><button title="Закрыть" aria-label="Закрыть уведомление" @onclick="() => _notice = null">×</button></div> }
     </main>
 </div>
 
@@ -169,6 +177,7 @@
 @code {
     private string _section = "chat";
     private string _message = "";
+    private string _invariants = "";
     private string? _error, _notice, _lastUsage;
     private bool _ready, _busy, _isNewProfile = true;
     private bool _pauseAfterExecution, _pauseAfterValidation;
@@ -189,6 +198,7 @@
     private string NavClass(string section) => _section == section ? "active" : "";
     private void OpenSection(string section) { _section = section; _notice = null; }
     private async Task OpenProfilesAsync() { OpenSection("profiles"); await ReloadProfilesAsync(); }
+    private async Task OpenInvariantsAsync() { OpenSection("invariants"); _invariants = await Session.GetInvariantsAsync(); }
     private async Task OpenMemoryAsync() { OpenSection("memory"); _memory = await Session.GetMemoryAsync(); }
     private async Task OpenRevitAsync() { OpenSection("revit"); try { _revitSessions = await Session.GetRevitSessionsAsync(); } catch (Exception e) { _notice = e.Message; } }
 
@@ -229,6 +239,8 @@
         if (response is null || Session.CurrentTask is null) return;
         _lastToolTraces = response.ToolTraces ?? [];
         _lastUsage = $"Этап: {Session.CurrentTask.State}; отправлено ≈{response.SentHistoryTokens:N0} токенов";
+        if (response.ModelResponse.FinishReason == "task_state_validation_error")
+            _notice = response.ModelResponse.Content;
     }
 
     private string TaskStageClass(TaskState state)
@@ -248,8 +260,26 @@
         _ => ""
     };
 
+    private static string MessageLabel(ChatMessage message) => message.Role == "user"
+        ? "Вы"
+        : message.Stage switch
+        {
+            TaskState.Planning => "Ассистент · Планирование",
+            TaskState.Execution => "Ассистент · Выполнение",
+            TaskState.Validation => "Ассистент · Валидация",
+            TaskState.Done => "Ассистент · Итог",
+            _ => "Ассистент"
+        };
+
     private async Task ClearHistoryAsync() { await Session.ClearHistoryAsync(); _notice = "Диалог очищен."; }
     private async Task CompleteTaskAsync() { await Session.CompleteTaskAsync(); _memory = await Session.GetMemoryAsync(); _notice = "Рабочая память очищена."; }
+    private async Task SaveInvariantsAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.SaveInvariantsAsync(_invariants); _notice = "Инварианты сохранены."; }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
     private void NewProfile() { _isNewProfile = true; _editingProfile = null; _profileDraft = new(); }
     private void EditProfile(UserProfile profile) { _isNewProfile = false; _editingProfile = profile; _profileDraft = UserProfileDraft.From(profile); }
 

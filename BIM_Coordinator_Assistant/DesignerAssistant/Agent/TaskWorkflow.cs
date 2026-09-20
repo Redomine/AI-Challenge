@@ -96,7 +96,19 @@ public sealed class TaskWorkflow
                     break;
 
                 case TaskState.Validation:
-                    LastResponse = await _runner.ValidateTaskAsync(Context, cancellationToken);
+                    try
+                    {
+                        LastResponse = await _runner.ValidateTaskAsync(Context, cancellationToken);
+                    }
+                    catch (Exception exception)
+                    {
+                        var report = $"Проверка не завершена: {exception.Message} Повторное изменение модели не запущено.";
+                        Context = Context with { ValidationResult = report };
+                        LastResponse = CreateWorkflowResponse(report, "task_state_validation_error");
+                        _pendingTransition = TaskState.Done;
+                        IsPaused = true;
+                        return;
+                    }
                     Context = Context with { ValidationResult = LastResponse.ModelResponse.Content };
                     try
                     {
@@ -134,8 +146,8 @@ public sealed class TaskWorkflow
             "Валидация должна вернуть ровно один маркер [PASS] или [FAIL]. Повторное изменение модели не запущено; задачу можно завершить кнопкой «Продолжить» после ручной проверки.");
     }
 
-    private static AgentResponse CreateWorkflowResponse(string content) => new(
-        new LlmResponse(content, "task_state_replan", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)),
+    private static AgentResponse CreateWorkflowResponse(string content, string finishReason = "task_state_replan") => new(
+        new LlmResponse(content, finishReason, new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)),
         0,
         true,
         0);

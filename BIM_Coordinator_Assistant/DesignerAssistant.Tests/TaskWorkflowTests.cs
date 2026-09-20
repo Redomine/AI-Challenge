@@ -123,6 +123,27 @@ public sealed class TaskWorkflowTests
         Assert.Contains("лимит последовательных вызовов", runner.ReplanningReport);
     }
 
+    [Fact]
+    public async Task ValidationFailurePausesBeforeDoneWithoutRepeatingExecution()
+    {
+        var runner = new ValidationFailingRunner();
+        var workflow = new TaskWorkflow(runner);
+        await workflow.StartAsync("Измени модель");
+
+        await workflow.ApprovePlanAsync();
+
+        Assert.Equal(TaskState.Validation, workflow.Context?.State);
+        Assert.True(workflow.IsPaused);
+        Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal("task_state_validation_error", workflow.LastResponse?.ModelResponse.FinishReason);
+        Assert.Contains("не найден текст модели", workflow.Context?.ValidationResult);
+
+        await workflow.ContinueAsync();
+
+        Assert.Equal(TaskState.Done, workflow.Context?.State);
+        Assert.Equal(1, runner.ExecutionCount);
+    }
+
     private sealed class FakeRunner(
         IEnumerable<string> executions,
         IEnumerable<string> validations) : ITaskStageRunner
@@ -173,6 +194,29 @@ public sealed class TaskWorkflowTests
 
         public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Validation не должна запускаться после превышения лимита.");
+
+        private static AgentResponse Response(string content) => new(
+            new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)),
+            0,
+            true,
+            0);
+    }
+
+    private sealed class ValidationFailingRunner : ITaskStageRunner
+    {
+        public int ExecutionCount { get; private set; }
+
+        public Task<AgentResponse> PlanTaskAsync(string query, string? previousExecution = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Response("1. Изменить модель"));
+
+        public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ExecutionCount++;
+            return Task.FromResult(Response("[EXECUTED] Модель изменена"));
+        }
+
+        public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("В ответе GigaChat не найден текст модели.");
 
         private static AgentResponse Response(string content) => new(
             new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)),

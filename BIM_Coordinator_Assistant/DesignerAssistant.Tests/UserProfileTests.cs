@@ -65,7 +65,10 @@ public sealed class UserProfileTests
         Assert.True(
             llm.Instructions.IndexOf("[WORKING_MEMORY", StringComparison.Ordinal) <
             llm.Instructions.IndexOf("[ACTIVE_USER_PROFILE", StringComparison.Ordinal));
-        Assert.EndsWith("[/ACTIVE_USER_PROFILE]", llm.Instructions.Trim());
+        Assert.True(
+            llm.Instructions.IndexOf("[ACTIVE_USER_PROFILE", StringComparison.Ordinal) <
+            llm.Instructions.IndexOf("[INVARIANTS", StringComparison.Ordinal));
+        Assert.EndsWith("[/INVARIANTS]", llm.Instructions.Trim());
     }
 
     [Fact]

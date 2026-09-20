@@ -27,7 +27,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .status-dot { width: 9px; height: 9px; background: #7c8984; border-radius: 50%; }
 .status-dot.online { background: #61d095; box-shadow: 0 0 0 3px rgba(97,208,149,.12); }
 
-.workspace { position: relative; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-width: 0; height: 100vh; background: #f7f8f7; }
+.workspace { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; height: 100vh; background: #f7f8f7; }
+.workspace.chat-workspace { grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .workspace-header { display: flex; justify-content: space-between; align-items: center; min-height: 76px; padding: 16px 28px; background: #fff; border-bottom: 1px solid #d9dfdc; }
 .workspace-header h1 { margin: 0; font-size: 21px; line-height: 1.25; }
 .workspace-header p { margin: 4px 0 0; color: #6a7771; font-size: 13px; }
@@ -98,7 +99,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .readonly-badge { padding: 5px 8px; color: #53615a; background: #eef1ef; border: 1px solid #d2dad6; border-radius: 4px; font-size: 12px; font-weight: 700; }
 .prompt-view { min-height: 0; padding: 24px 28px; }
 .prompt-view textarea { width: 100%; height: 100%; min-height: 420px; resize: none; padding: 16px; color: #27322d; background: #fff; border: 1px solid #cdd6d1; border-radius: 5px; font-family: Consolas, "Courier New", monospace; font-size: 13px; line-height: 1.55; letter-spacing: 0; }
-.notice { position: absolute; right: 22px; bottom: 22px; max-width: min(520px, calc(100% - 44px)); padding: 11px 14px; color: #fff; background: #26342e; border-radius: 5px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.invariants-view { min-height: 0; padding: 24px 28px; }
+.invariants-view textarea { width: 100%; height: 100%; min-height: 420px; resize: none; padding: 16px; color: #202a25; background: #fff; border: 1px solid #bfc9c4; border-radius: 5px; outline: none; line-height: 1.55; letter-spacing: 0; }
+.invariants-view textarea:focus { border-color: #3b7659; box-shadow: 0 0 0 3px rgba(59,118,89,.1); }
+.notice { position: absolute; right: 22px; bottom: 22px; display: flex; align-items: flex-start; gap: 12px; max-width: min(620px, calc(100% - 44px)); padding: 11px 12px 11px 14px; color: #fff; background: #26342e; border-radius: 5px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.notice span { line-height: 1.4; }
+.notice button { flex: 0 0 28px; width: 28px; height: 28px; padding: 0; color: #fff; background: transparent; border: 0; font-size: 20px; line-height: 1; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(16,24,20,.62); }
 .confirmation { width: min(620px, 100%); padding: 24px; background: #fff; border-radius: 7px; box-shadow: 0 20px 70px rgba(0,0,0,.28); }

@@ -41,6 +41,9 @@ public sealed class SqliteChatHistoryStore : IChatHistoryStore
             );
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        command.CommandText = "ALTER TABLE chat_messages ADD COLUMN stage TEXT NULL;";
+        try { await command.ExecuteNonQueryAsync(cancellationToken); }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 1 && exception.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) { }
     }
 
     public async Task<IReadOnlyList<ChatMessage>> LoadAsync(
@@ -49,12 +52,13 @@ public sealed class SqliteChatHistoryStore : IChatHistoryStore
         var messages = new List<ChatMessage>();
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT role, content FROM chat_messages ORDER BY id;";
+        command.CommandText = "SELECT role, content, stage FROM chat_messages ORDER BY id;";
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            messages.Add(new ChatMessage(reader.GetString(0), reader.GetString(1)));
+            TaskState? stage = reader.IsDBNull(2) ? null : Enum.Parse<TaskState>(reader.GetString(2));
+            messages.Add(new ChatMessage(reader.GetString(0), reader.GetString(1), stage));
         }
 
         return messages;
@@ -94,9 +98,10 @@ public sealed class SqliteChatHistoryStore : IChatHistoryStore
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText =
-                "INSERT INTO chat_messages (role, content) VALUES ($role, $content);";
+                "INSERT INTO chat_messages (role, content, stage) VALUES ($role, $content, $stage);";
             command.Parameters.AddWithValue("$role", message.Role);
             command.Parameters.AddWithValue("$content", message.Content);
+            command.Parameters.AddWithValue("$stage", message.Stage?.ToString() ?? (object)DBNull.Value);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
