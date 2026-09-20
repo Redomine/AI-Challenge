@@ -49,6 +49,27 @@ public sealed class StructuredValidationTests
         Assert.Equal(1, llm.RegularCallCount);
     }
 
+    [Fact]
+    public async Task ValidationReportsDetailsFromAllFourFailedAttempts()
+    {
+        var llm = new AlwaysFailingStructuredLlm();
+        var agent = new DesignAssistantAgent(
+            llm,
+            new InMemoryChatHistoryStore(),
+            new InMemoryMemoryStore(),
+            "instructions",
+            new AppOptions("key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
+        await agent.InitializeAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => agent.ValidateTaskAsync(new TaskContext(
+            "query", TaskState.Validation, "plan", "execution", PlanApproved: true)));
+
+        Assert.Equal(1, llm.StructuredCallCount);
+        Assert.Equal(3, llm.RegularCallCount);
+        Assert.Contains("Попытка 1", error.Message);
+        Assert.Contains("Попытка 4", error.Message);
+    }
+
     private sealed class StructuredLlm(string response) : IStructuredLlmClient
     {
         public bool StructuredWasUsed { get; private set; }
@@ -84,6 +105,27 @@ public sealed class StructuredValidationTests
         {
             StructuredCallCount++;
             throw new InvalidOperationException("В ответе GigaChat не найден текст модели.");
+        }
+    }
+
+    private sealed class AlwaysFailingStructuredLlm : IStructuredLlmClient
+    {
+        public int StructuredCallCount { get; private set; }
+        public int RegularCallCount { get; private set; }
+
+        public Task<TokenCountResult> CountTextTokensAsync(IReadOnlyCollection<string> texts, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TokenCountResult(0, true));
+
+        public Task<LlmResponse> GenerateAsync(string instructions, IReadOnlyCollection<ChatMessage> messages, CancellationToken cancellationToken = default)
+        {
+            RegularCallCount++;
+            throw new InvalidOperationException($"Ошибка обычного запроса {RegularCallCount}.");
+        }
+
+        public Task<LlmResponse> GenerateStructuredAsync(string instructions, IReadOnlyCollection<ChatMessage> messages, JsonElement schema, CancellationToken cancellationToken = default)
+        {
+            StructuredCallCount++;
+            throw new InvalidOperationException("Пустой structured-ответ.");
         }
     }
 }

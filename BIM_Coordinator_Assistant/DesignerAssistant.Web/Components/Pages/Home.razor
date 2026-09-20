@@ -64,6 +64,17 @@
                 @if (_busy) { <div class="thinking">Ассистент анализирует запрос...</div> }
             </section>
             <footer class="composer">
+                @if (Session.ValidationFailed && Session.CurrentTask is not null)
+                {
+                    <section class="validation-recovery" role="alert">
+                        <strong>Валидация не завершена</strong>
+                        <details open><summary>Детали ошибки</summary><pre>@Session.CurrentTask.ValidationResult</pre></details>
+                        <div>
+                            <button class="secondary" @onclick="RetryValidationAsync" disabled="@_busy">Повторить валидацию</button>
+                            <button class="danger" @onclick="FinishWithoutValidation" disabled="@_busy">Завершить без валидации</button>
+                        </div>
+                    </section>
+                }
                 @if (_lastToolTraces.Count > 0)
                 {
                     <details class="tool-details"><summary>Диагностика инструментов</summary>@foreach (var trace in _lastToolTraces) { <pre>@trace</pre> }</details>
@@ -71,7 +82,7 @@
                 <textarea @bind="_message" @bind:event="oninput" placeholder="Сообщение ассистенту" rows="3" disabled="@_busy"></textarea>
                 <div class="composer-actions">
                     <span>@(_lastUsage ?? "Enter в поле переносит строку")</span>
-                    @if (Session.IsTaskPaused && !Session.AwaitingPlanApproval)
+                    @if (Session.IsTaskPaused && !Session.AwaitingPlanApproval && !Session.ValidationFailed)
                     {
                         <button class="primary" @onclick="ContinueTaskAsync" disabled="@_busy">Продолжить</button>
                     }
@@ -229,6 +240,21 @@
         try { await Session.ContinueTaskAsync(); UpdateTaskMetrics(); }
         catch (Exception e) { _notice = e.Message; }
         finally { _busy = false; }
+    }
+
+    private async Task RetryValidationAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.RetryValidationAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private void FinishWithoutValidation()
+    {
+        Session.FinishWithoutValidation();
+        UpdateTaskMetrics();
+        _notice = "Задача завершена без успешной валидации по решению пользователя.";
     }
 
     private void CancelTask() { Session.CancelTask(); _notice = "Задача отменена на стадии планирования."; }

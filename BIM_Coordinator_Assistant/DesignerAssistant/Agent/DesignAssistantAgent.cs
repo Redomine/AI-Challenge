@@ -153,7 +153,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Верни status=FAIL, если нужны исправления, и перечисли конкретные дефекты в report.
             """;
         var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN]\n{context.Plan}\n[/APPROVED_PLAN]\n\n[EXECUTION_RESULT]\n{context.ExecutionResult}\n[/EXECUTION_RESULT]";
-        Exception? structuredError = null;
+        var errors = new List<string>();
         try
         {
             return await RunStageAsync(
@@ -168,7 +168,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         }
         catch (Exception exception) when (exception is InvalidOperationException or JsonException or InvalidDataException)
         {
-            structuredError = exception;
+            errors.Add($"Попытка 1 (structured): {exception.Message}");
         }
 
         var fallbackInstructions = stageInstructions + """
@@ -176,23 +176,27 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Структурированный режим API не вернул результат. Ответь только одним JSON-объектом без Markdown:
             {"status":"PASS или FAIL","report":"краткий отчёт"}
             """;
-        try
+        for (var attempt = 2; attempt <= 4; attempt++)
         {
-            return await RunStageAsync(
-                input,
-                fallbackInstructions,
-                useTools: false,
-                addUserMessage: false,
-                cancellationToken,
-                stage: TaskState.Validation,
-                transformResponse: response => response with { Content = FormatValidationResponse(response.Content) });
+            try
+            {
+                return await RunStageAsync(
+                    input,
+                    fallbackInstructions,
+                    useTools: false,
+                    addUserMessage: false,
+                    cancellationToken,
+                    stage: TaskState.Validation,
+                    transformResponse: response => response with { Content = FormatValidationResponse(response.Content) });
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or JsonException or InvalidDataException)
+            {
+                errors.Add($"Попытка {attempt} (обычный режим): {exception.Message}");
+            }
         }
-        catch (Exception fallbackError) when (fallbackError is InvalidOperationException or JsonException or InvalidDataException)
-        {
-            throw new InvalidOperationException(
-                $"Validation не получила корректный ответ. Structured: {structuredError.Message} Fallback: {fallbackError.Message}",
-                fallbackError);
-        }
+
+        throw new InvalidOperationException(
+            $"Validation не получила корректный ответ после 4 попыток:{Environment.NewLine}{string.Join(Environment.NewLine, errors)}");
     }
 
     public IReadOnlyList<ChatMessage> GetHistory() { EnsureInitialized(); return _history.ToArray(); }

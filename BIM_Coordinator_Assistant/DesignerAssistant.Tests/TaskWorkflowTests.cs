@@ -85,9 +85,11 @@ public sealed class TaskWorkflowTests
         var workflow = new TaskWorkflow(runner);
         await workflow.StartAsync("Измени модель");
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.ApprovePlanAsync());
+        await workflow.ApprovePlanAsync();
 
-        Assert.Contains("Повторное изменение модели не запущено", error.Message);
+        Assert.True(workflow.ValidationFailed);
+        Assert.True(workflow.IsPaused);
+        Assert.Contains("Повторное изменение модели не запущено", workflow.Context?.ValidationResult);
         Assert.Equal(1, runner.ExecutionCount);
         Assert.Equal(1, runner.ValidationCount);
     }
@@ -124,7 +126,7 @@ public sealed class TaskWorkflowTests
     }
 
     [Fact]
-    public async Task ValidationFailurePausesBeforeDoneWithoutRepeatingExecution()
+    public async Task ValidationFailureRequiresExplicitFinishWithoutValidation()
     {
         var runner = new ValidationFailingRunner();
         var workflow = new TaskWorkflow(runner);
@@ -138,10 +140,31 @@ public sealed class TaskWorkflowTests
         Assert.Equal("task_state_validation_error", workflow.LastResponse?.ModelResponse.FinishReason);
         Assert.Contains("не найден текст модели", workflow.Context?.ValidationResult);
 
-        await workflow.ContinueAsync();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.ContinueAsync());
+        Assert.Contains("повторить валидацию", error.Message);
+
+        workflow.FinishWithoutValidation();
 
         Assert.Equal(TaskState.Done, workflow.Context?.State);
         Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal("task_state_validation_skipped", workflow.LastResponse?.ModelResponse.FinishReason);
+    }
+
+    [Fact]
+    public async Task RetryValidationContinuesWithoutRepeatingExecution()
+    {
+        var runner = new RetryValidationRunner();
+        var workflow = new TaskWorkflow(runner);
+        await workflow.StartAsync("Измени модель");
+        await workflow.ApprovePlanAsync();
+
+        Assert.True(workflow.ValidationFailed);
+
+        await workflow.RetryValidationAsync();
+
+        Assert.Equal(TaskState.Done, workflow.Context?.State);
+        Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal(2, runner.ValidationCount);
     }
 
     private sealed class FakeRunner(
@@ -217,6 +240,35 @@ public sealed class TaskWorkflowTests
 
         public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("В ответе GigaChat не найден текст модели.");
+
+        private static AgentResponse Response(string content) => new(
+            new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)),
+            0,
+            true,
+            0);
+    }
+
+    private sealed class RetryValidationRunner : ITaskStageRunner
+    {
+        public int ExecutionCount { get; private set; }
+        public int ValidationCount { get; private set; }
+
+        public Task<AgentResponse> PlanTaskAsync(string query, string? previousExecution = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Response("1. Изменить модель"));
+
+        public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ExecutionCount++;
+            return Task.FromResult(Response("[EXECUTED] Модель изменена"));
+        }
+
+        public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ValidationCount++;
+            return ValidationCount == 1
+                ? throw new InvalidOperationException("Временный сбой Validation.")
+                : Task.FromResult(Response("[PASS] Проверено"));
+        }
 
         private static AgentResponse Response(string content) => new(
             new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)),

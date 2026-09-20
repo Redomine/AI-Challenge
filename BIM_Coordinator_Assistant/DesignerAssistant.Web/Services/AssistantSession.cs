@@ -24,6 +24,7 @@ public sealed class AssistantSession : IAsyncDisposable
     public TaskContext? CurrentTask => _workflow?.Context;
     public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
     public bool IsTaskPaused => _workflow?.IsPaused == true;
+    public bool ValidationFailed => _workflow?.ValidationFailed == true;
     public AgentResponse? LastTaskResponse => _workflow?.LastResponse;
 
     public IReadOnlyList<ChatMessage> History => _agent?.GetHistory() ?? [];
@@ -74,6 +75,18 @@ public sealed class AssistantSession : IAsyncDisposable
     public async Task ContinueTaskAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ContinueAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RetryValidationAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.RetryValidationAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public void FinishWithoutValidation()
+    {
+        Workflow.FinishWithoutValidation();
         Changed?.Invoke();
     }
 

@@ -19,6 +19,7 @@ public sealed class TaskWorkflow
     public TaskPauseOptions PauseOptions { get; set; } = new();
     public bool AwaitingPlanApproval => Context?.State == TaskState.Planning && _pendingTransition == TaskState.Execution;
     public bool IsPaused { get; private set; }
+    public bool ValidationFailed { get; private set; }
     public AgentResponse? LastResponse { get; private set; }
 
     public async Task StartAsync(string query, CancellationToken cancellationToken = default)
@@ -47,9 +48,37 @@ public sealed class TaskWorkflow
     {
         EnsureActive();
         if (AwaitingPlanApproval) throw new InvalidOperationException("Сначала согласуйте план.");
+        if (ValidationFailed) throw new InvalidOperationException("Выберите: повторить валидацию или завершить задачу без неё.");
         if (!IsPaused) throw new InvalidOperationException("Задача не находится на паузе.");
         IsPaused = false;
         await AdvanceAsync(cancellationToken);
+    }
+
+    public async Task RetryValidationAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        if (Context!.State != TaskState.Validation || !ValidationFailed)
+            throw new InvalidOperationException("Нет неудачной валидации для повторного запуска.");
+
+        ValidationFailed = false;
+        IsPaused = false;
+        if (!await ValidateCurrentAsync(cancellationToken)) return;
+        if (PauseOptions.AfterValidation) { IsPaused = true; return; }
+        await AdvanceAsync(cancellationToken);
+    }
+
+    public void FinishWithoutValidation()
+    {
+        EnsureActive();
+        if (Context!.State != TaskState.Validation || !ValidationFailed)
+            throw new InvalidOperationException("Завершение без валидации доступно только после её сбоя.");
+
+        const string report = "[SKIPPED] Задача завершена пользователем без успешной валидации.";
+        Context = _machine.Transition(Context with { ValidationResult = report }, TaskState.Done);
+        LastResponse = CreateWorkflowResponse(report, "task_state_validation_skipped");
+        _pendingTransition = null;
+        ValidationFailed = false;
+        IsPaused = false;
     }
 
     public void Cancel()
@@ -57,6 +86,7 @@ public sealed class TaskWorkflow
         Context = null;
         LastResponse = null;
         _pendingTransition = null;
+        ValidationFailed = false;
         IsPaused = false;
     }
 
@@ -96,30 +126,7 @@ public sealed class TaskWorkflow
                     break;
 
                 case TaskState.Validation:
-                    try
-                    {
-                        LastResponse = await _runner.ValidateTaskAsync(Context, cancellationToken);
-                    }
-                    catch (Exception exception)
-                    {
-                        var report = $"Проверка не завершена: {exception.Message} Повторное изменение модели не запущено.";
-                        Context = Context with { ValidationResult = report };
-                        LastResponse = CreateWorkflowResponse(report, "task_state_validation_error");
-                        _pendingTransition = TaskState.Done;
-                        IsPaused = true;
-                        return;
-                    }
-                    Context = Context with { ValidationResult = LastResponse.ModelResponse.Content };
-                    try
-                    {
-                        _pendingTransition = GetValidationTarget(LastResponse);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        _pendingTransition = TaskState.Done;
-                        IsPaused = true;
-                        throw;
-                    }
+                    if (!await ValidateCurrentAsync(cancellationToken)) return;
                     if (PauseOptions.AfterValidation) { IsPaused = true; return; }
                     break;
 
@@ -130,6 +137,28 @@ public sealed class TaskWorkflow
         }
 
         if (_pendingTransition is not null) IsPaused = true;
+    }
+
+    private async Task<bool> ValidateCurrentAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            LastResponse = await _runner.ValidateTaskAsync(Context!, cancellationToken);
+            Context = Context! with { ValidationResult = LastResponse.ModelResponse.Content };
+            _pendingTransition = GetValidationTarget(LastResponse);
+            ValidationFailed = false;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            var report = $"Проверка не завершена. Повторное изменение модели не запущено.{Environment.NewLine}{exception.Message}";
+            Context = Context! with { ValidationResult = report };
+            LastResponse = CreateWorkflowResponse(report, "task_state_validation_error");
+            _pendingTransition = null;
+            ValidationFailed = true;
+            IsPaused = true;
+            return false;
+        }
     }
 
     private static bool StartsWith(AgentResponse response, string marker) =>

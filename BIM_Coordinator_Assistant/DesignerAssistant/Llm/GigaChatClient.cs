@@ -178,9 +178,17 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var totalBilled = route.BilledTokens;
         var forcedTool = route.Action == "call_tool" ? route.ToolName : null;
         var toolWasInvoked = false;
-        for (var step = 0; step < 4; step++)
+        var toolCallCount = 0;
+        var finalizationRetries = 0;
+        var initialResponseRetries = 0;
+        var forceTextResponse = false;
+        string? lastToolName = null;
+        var executedToolResults = new List<(string Name, string Result)>();
+        for (var step = 0; step < 7; step++)
         {
-            object functionChoice = forcedTool is not null
+            object functionChoice = forceTextResponse
+                ? "none"
+                : forcedTool is not null
                 ? new Dictionary<string, string> { ["name"] = forcedTool }
                 : route.Action == "answer" ? "none" : "auto";
             using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
@@ -213,6 +221,10 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
 
             if (message.TryGetProperty("function_call", out var functionCall) && functionCall.ValueKind == JsonValueKind.Object)
             {
+                if (forceTextResponse)
+                    throw new InvalidOperationException(
+                        $"GigaChat вернул вызов инструмента при принудительной финализации. message={message.GetRawText()}");
+                if (toolCallCount >= 4) throw new ToolCallLimitExceededException(4);
                 var name = functionCall.GetProperty("name").GetString() ?? throw new JsonException("GigaChat не указал имя функции.");
                 var argumentsElement = functionCall.GetProperty("arguments");
                 using var argumentsDocument = argumentsElement.ValueKind == JsonValueKind.String
@@ -223,8 +235,11 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                 var toolResult = EnsureJsonToolResult(
                     await toolProvider.InvokeAsync(name, arguments, cancellationToken));
                 trace?.Invoke($"Tool result: {name} {FormatTraceResult(toolResult)}");
+                executedToolResults.Add((name, toolResult));
                 forcedTool = null;
                 toolWasInvoked = true;
+                toolCallCount++;
+                lastToolName = name;
                 conversation.Add(new Dictionary<string, object?>
                 {
                     ["role"] = "assistant", ["content"] = message.TryGetProperty("content", out var interim) ? interim.GetString() ?? "" : "",
@@ -238,7 +253,67 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
             }
 
             var content = message.TryGetProperty("content", out var contentElement) ? contentElement.GetString() : null;
-            if (string.IsNullOrWhiteSpace(content)) throw new InvalidOperationException("GigaChat не вернул ни текст, ни вызов инструмента.");
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                var emptyFinishReason = choice.TryGetProperty("finish_reason", out var emptyFinish)
+                    ? emptyFinish.GetString() ?? "не указана"
+                    : "не указана";
+                if (toolWasInvoked && finalizationRetries < 2)
+                {
+                    finalizationRetries++;
+                    forceTextResponse = true;
+                    trace?.Invoke(
+                        $"Empty response after tool '{lastToolName}'. Finalization retry {finalizationRetries}/2; " +
+                        $"finish_reason={emptyFinishReason}; message={message.GetRawText()}");
+                    continue;
+                }
+                if (!toolWasInvoked && initialResponseRetries < 2)
+                {
+                    initialResponseRetries++;
+                    trace?.Invoke(
+                        $"Empty response before first tool. Initial retry {initialResponseRetries}/2; " +
+                        $"finish_reason={emptyFinishReason}; message={message.GetRawText()}");
+                    continue;
+                }
+                if (!toolWasInvoked && forcedTool is not null)
+                {
+                    var routedTool = tools.FirstOrDefault(tool => tool.Name == forcedTool);
+                    if (routedTool is not null && HasNoRequiredArguments(routedTool.Parameters))
+                    {
+                        if (toolCallCount >= 4) throw new ToolCallLimitExceededException(4);
+                        using var emptyArguments = JsonDocument.Parse("{}");
+                        var toolResult = EnsureJsonToolResult(
+                            await toolProvider.InvokeAsync(routedTool.Name, emptyArguments.RootElement, cancellationToken));
+                        trace?.Invoke(
+                            $"Direct routed fallback after empty model responses: {routedTool.Name} {{}}");
+                        trace?.Invoke($"Tool result: {routedTool.Name} {FormatTraceResult(toolResult)}");
+                        executedToolResults.Add((routedTool.Name, toolResult));
+                        conversation.Add(new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = "",
+                            ["function_call"] = new Dictionary<string, object?>
+                            {
+                                ["name"] = routedTool.Name,
+                                ["arguments"] = new Dictionary<string, object?>()
+                            }
+                        });
+                        conversation.Add(new Dictionary<string, object?>
+                        {
+                            ["role"] = "function", ["name"] = routedTool.Name, ["content"] = toolResult
+                        });
+                        toolCallCount++;
+                        toolWasInvoked = true;
+                        lastToolName = routedTool.Name;
+                        forcedTool = null;
+                        forceTextResponse = true;
+                        continue;
+                    }
+                }
+                throw new InvalidOperationException(
+                    $"GigaChat не вернул ни текст, ни вызов инструмента. finish_reason={emptyFinishReason}; " +
+                    $"last_tool={lastToolName ?? "нет"}; message={message.GetRawText()}");
+            }
             var suggestedTool = tools.FirstOrDefault(tool => content.Contains(tool.Name, StringComparison.Ordinal));
             if (suggestedTool is not null && !toolWasInvoked && route.Action == "call_tool" && step < 3)
             {
@@ -252,10 +327,28 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                 continue;
             }
             var finishReason = choice.TryGetProperty("finish_reason", out var finish) ? finish.GetString() ?? "не указана" : "не указана";
-            return new LlmResponse(content.Trim(), finishReason, new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false));
+            var finalContent = toolWasInvoked
+                ? BuildGroundedToolReport(executedToolResults)
+                : content.Trim();
+            return new LlmResponse(
+                finalContent,
+                toolWasInvoked ? "tool_results_grounded" : finishReason,
+                new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false));
         }
 
         throw new ToolCallLimitExceededException(4);
+    }
+
+    private static bool HasNoRequiredArguments(JsonElement parameters) =>
+        !parameters.TryGetProperty("required", out var required) ||
+        required.ValueKind != JsonValueKind.Array ||
+        required.GetArrayLength() == 0;
+
+    private static string BuildGroundedToolReport(IReadOnlyCollection<(string Name, string Result)> results)
+    {
+        return string.Join(
+            Environment.NewLine + Environment.NewLine,
+            results.Select(result => $"Инструмент: {result.Name}{Environment.NewLine}Фактический результат: {result.Result}"));
     }
 
     private static string? ExtractActiveProfile(string instructions)

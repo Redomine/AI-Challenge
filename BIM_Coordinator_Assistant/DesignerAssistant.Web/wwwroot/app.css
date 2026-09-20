@@ -61,6 +61,11 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .tool-details { margin-bottom: 10px; color: #5c6963; font-size: 12px; }
 .tool-details summary { cursor: pointer; font-weight: 700; }
 .tool-details pre { max-height: 150px; overflow: auto; margin: 7px 0; padding: 8px; background: #eef1ef; border: 1px solid #d6ddda; border-radius: 4px; white-space: pre-wrap; }
+.validation-recovery { margin-bottom: 12px; padding: 12px 14px; background: #fff5f2; border: 1px solid #dba99d; border-radius: 5px; color: #592d25; }
+.validation-recovery > strong { display: block; margin-bottom: 7px; }
+.validation-recovery details summary { cursor: pointer; font-size: 12px; font-weight: 700; }
+.validation-recovery pre { max-height: 180px; overflow: auto; margin: 8px 0 10px; padding: 9px; background: #fff; border: 1px solid #e4c8c1; white-space: pre-wrap; }
+.validation-recovery > div { display: flex; justify-content: flex-end; gap: 8px; }
 
 .primary, .secondary, .danger, .danger-solid { min-height: 36px; padding: 8px 13px; border-radius: 5px; border: 1px solid transparent; font-weight: 650; }
 .primary { color: #152019; background: #d5ef46; border-color: #c3dc38; }
