@@ -161,7 +161,7 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
         {
             Name = "rvt-mcp-confirmed-writes",
             Command = _serverPath,
-            Arguments = ["--toolsets", "query,create,modify,delete,view,meta,custom", "--disable-toolbaker"]
+            Arguments = ["--toolsets", "query,create,modify,delete,view,meta,organization,custom", "--disable-toolbaker"]
         });
         _client = await McpClient.CreateAsync(transport, cancellationToken: token);
         return _client;

@@ -251,6 +251,18 @@ public sealed class ToolRouter
         if (Has("workspace_run_command_recipe") &&
             Regex.IsMatch(message, @"\b(git\s+status|git\s+diff|текущ\w*\s+ветк\w*|dotnet\s+--info|сведени\w*\s+о\s+dotnet)\b", RegexOptions.IgnoreCase))
             return "workspace_run_command_recipe";
+        if (Has("revit_custom_open_model") &&
+            Regex.IsMatch(message, @"\b(открой|открыть|загрузи|загрузить)\b.{0,180}\.rvt\b|\.rvt\b.{0,180}\b(открой|открыть|загрузи|загрузить)\b", RegexOptions.IgnoreCase))
+            return "revit_custom_open_model";
+        if (Has("revit_custom_open_family") &&
+            Regex.IsMatch(message, @"\b(открой|открыть|загрузи|загрузить)\b.{0,180}\.rfa\b|\.rfa\b.{0,180}\b(открой|открыть|загрузи|загрузить)\b", RegexOptions.IgnoreCase))
+            return "revit_custom_open_family";
+        if (Has("revit_custom_unload_links_locally") &&
+            Regex.IsMatch(message, @"\b(выгрузи|выгрузить|отключи|отключить)\b.{0,60}\b(все\s+)?(revit[- ]?)?(связи|линки)\b", RegexOptions.IgnoreCase))
+            return "revit_custom_unload_links_locally";
+        if (Has("revit_select_elements") &&
+            Regex.IsMatch(message, @"\b(выдели|выбери)\b.{0,80}(?<!\d)\d{2,}(?!\d)", RegexOptions.IgnoreCase))
+            return "revit_select_elements";
         if (Has("revit_get_element_details") &&
             Regex.IsMatch(message, @"(?<!\d)\d{5,}(?!\d)") &&
             Regex.IsMatch(message, @"элемент|объект|что\s+(это|за)", RegexOptions.IgnoreCase))

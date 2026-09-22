@@ -25,6 +25,7 @@ public sealed class AssistantSession : IAsyncDisposable
     public TaskContext? CurrentTask => _workflow?.Context;
     public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
     public bool AwaitingClarification => _workflow?.AwaitingClarification == true;
+    public bool ExecutionInterrupted => _workflow?.ExecutionInterrupted == true;
     public bool IsTaskPaused => _workflow?.IsPaused == true;
     public bool ValidationFailed => _workflow?.ValidationFailed == true;
     public AgentResponse? LastTaskResponse => _workflow?.LastResponse;
@@ -91,6 +92,30 @@ public sealed class AssistantSession : IAsyncDisposable
     public async Task RetryExecutionAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.RetryExecutionAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RetryInterruptedExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.RetryInterruptedExecutionAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RefineInterruptedExecutionAsync(string feedback, CancellationToken cancellationToken = default)
+    {
+        await Workflow.RefineInterruptedExecutionAsync(feedback, cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task ValidateInterruptedExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.ValidateInterruptedExecutionAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task ReplanInterruptedExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.ReplanInterruptedExecutionAsync(cancellationToken);
         Changed?.Invoke();
     }
 

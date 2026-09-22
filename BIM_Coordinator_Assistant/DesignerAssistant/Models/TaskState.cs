@@ -5,6 +5,7 @@ public enum TaskState
     Planning,
     AwaitingPlanApproval,
     Execution,
+    ExecutionInterrupted,
     Clarification,
     Validation,
     AwaitingValidationDecision,
@@ -39,7 +40,9 @@ public sealed record TaskContext(
     ClarificationRequest? Clarification = null,
     TaskState? ResumeState = null,
     ExecutionCheckpoint? Checkpoint = null,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    IReadOnlyList<string>? DiagnosticTraces = null,
+    bool ExecutionRetrySafe = true);
 
 public sealed record TaskPauseOptions(
     bool AfterPlanning = true,

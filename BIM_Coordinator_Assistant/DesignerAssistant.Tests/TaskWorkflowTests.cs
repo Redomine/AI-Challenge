@@ -224,6 +224,65 @@ public sealed class TaskWorkflowTests
         Assert.Contains("Ответ пользователя", runner.RevisionContext);
     }
 
+    [Fact]
+    public async Task EmptyExecutionFailureCanBeRetriedWithoutLosingTask()
+    {
+        var runner = new InterruptedRunner(toolCompleted: false);
+        var workflow = new TaskWorkflow(runner);
+        await workflow.StartAsync("Выполни задачу");
+
+        await workflow.ApprovePlanAsync();
+
+        Assert.True(workflow.ExecutionInterrupted);
+        Assert.Equal(TaskState.ExecutionInterrupted, workflow.Context?.State);
+        Assert.True(workflow.Context?.ExecutionRetrySafe);
+        Assert.Equal("task_state_execution_interrupted", workflow.LastResponse?.ModelResponse.FinishReason);
+        Assert.Contains("Initial retry", workflow.LastResponse?.ToolTraces?.Single());
+
+        await workflow.RetryInterruptedExecutionAsync();
+
+        Assert.Equal(TaskState.Done, workflow.Context?.State);
+        Assert.Equal(2, runner.ExecutionCount);
+        Assert.Equal(1, workflow.Context?.Checkpoint?.Attempt);
+    }
+
+    [Fact]
+    public async Task ToolResultBeforeFailureBlocksMutationRetryAndAllowsValidation()
+    {
+        var runner = new InterruptedRunner(toolCompleted: true);
+        var workflow = new TaskWorkflow(runner);
+        await workflow.StartAsync("Измени модель");
+
+        await workflow.ApprovePlanAsync();
+
+        Assert.True(workflow.ExecutionInterrupted);
+        Assert.False(workflow.Context?.ExecutionRetrySafe);
+        Assert.Contains("Автоматический повтор заблокирован", workflow.Context?.ExecutionResult);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.RetryInterruptedExecutionAsync());
+
+        await workflow.ValidateInterruptedExecutionAsync();
+
+        Assert.Equal(TaskState.Done, workflow.Context?.State);
+        Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal(1, runner.ValidationCount);
+    }
+
+    [Fact]
+    public async Task FailedValidationAfterInterruptedMutationNeverRepeatsExecutionAutomatically()
+    {
+        var runner = new InterruptedRunner(toolCompleted: true, validation: "[RETRY_EXECUTION] Требуется проверка пользователем");
+        var workflow = new TaskWorkflow(runner);
+        await workflow.StartAsync("Измени модель");
+        await workflow.ApprovePlanAsync();
+
+        await workflow.ValidateInterruptedExecutionAsync();
+
+        Assert.Equal(TaskState.AwaitingValidationDecision, workflow.Context?.State);
+        Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal(1, runner.ValidationCount);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.RetryExecutionAsync());
+    }
+
     private sealed class FakeRunner(
         IEnumerable<string> executions,
         IEnumerable<string> validations) : ITaskStageRunner
@@ -357,6 +416,37 @@ public sealed class TaskWorkflowTests
 
         public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default) =>
             Task.FromResult(Response("[PASS] Проверено"));
+
+        private static AgentResponse Response(string content) => new(
+            new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)), 0, true, 0);
+    }
+
+    private sealed class InterruptedRunner(bool toolCompleted, string validation = "[PASS] Проверено") : ITaskStageRunner
+    {
+        public int ExecutionCount { get; private set; }
+        public int ValidationCount { get; private set; }
+
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null) =>
+            Task.FromResult(Response("1. Выполнить задачу"));
+
+        public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ExecutionCount++;
+            if (ExecutionCount == 1)
+            {
+                var traces = toolCompleted
+                    ? new[] { "Tool result: revit_write {\"ok\":true}" }
+                    : new[] { "Empty response before first tool. Initial retry 2/2" };
+                throw new AgentStageException("GigaChat вернул пустой ответ.", traces, new InvalidOperationException("empty"));
+            }
+            return Task.FromResult(Response("[EXECUTED] Готово"));
+        }
+
+        public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ValidationCount++;
+            return Task.FromResult(Response(validation));
+        }
 
         private static AgentResponse Response(string content) => new(
             new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)), 0, true, 0);

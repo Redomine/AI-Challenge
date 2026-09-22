@@ -326,12 +326,23 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         messages.Add(new ChatMessage("user", input));
         var traces = new List<string>();
         LlmResponse response;
-        if (useTools && _toolProvider is not null && _llmClient is IToolCallingLlmClient toolClient)
-            response = await toolClient.GenerateWithToolsAsync(instructions, messages, _toolProvider, traces.Add, cancellationToken);
-        else if (responseSchema is not null && _llmClient is IStructuredLlmClient structuredClient)
-            response = await structuredClient.GenerateStructuredAsync(instructions, messages, responseSchema.Value, cancellationToken);
-        else
-            response = await _llmClient.GenerateAsync(instructions, messages, cancellationToken);
+        try
+        {
+            if (useTools && _toolProvider is not null && _llmClient is IToolCallingLlmClient toolClient)
+                response = await toolClient.GenerateWithToolsAsync(instructions, messages, _toolProvider, traces.Add, cancellationToken);
+            else if (responseSchema is not null && _llmClient is IStructuredLlmClient structuredClient)
+                response = await structuredClient.GenerateStructuredAsync(instructions, messages, responseSchema.Value, cancellationToken);
+            else
+                response = await _llmClient.GenerateAsync(instructions, messages, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new AgentStageException(exception.Message, traces.ToArray(), exception);
+        }
         if (transformResponse is not null) response = transformResponse(response);
 
         var stored = new List<ChatMessage>();

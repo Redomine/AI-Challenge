@@ -310,6 +310,15 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                         continue;
                     }
                 }
+                if (toolWasInvoked)
+                {
+                    trace?.Invoke(
+                        $"Empty final response after retries. Returning grounded results for {executedToolResults.Count} completed tool call(s).");
+                    return new LlmResponse(
+                        BuildGroundedToolReport(executedToolResults),
+                        "tool_results_empty_final_fallback",
+                        new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false));
+                }
                 throw new InvalidOperationException(
                     $"GigaChat не вернул ни текст, ни вызов инструмента. finish_reason={emptyFinishReason}; " +
                     $"last_tool={lastToolName ?? "нет"}; message={message.GetRawText()}");

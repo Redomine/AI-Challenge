@@ -71,9 +71,32 @@
                         <details open><summary>Детали ошибки</summary><pre>@Session.CurrentTask.ValidationResult</pre></details>
                         <div>
                             <button class="secondary" @onclick="RetryValidationAsync" disabled="@_busy">Повторить валидацию</button>
-                            <button class="secondary" @onclick="RetryExecutionAsync" disabled="@_busy">Повторить выполнение</button>
+                            @if (Session.CurrentTask.ExecutionRetrySafe)
+                            {
+                                <button class="secondary" @onclick="RetryExecutionAsync" disabled="@_busy">Повторить выполнение</button>
+                            }
                             <button class="secondary" @onclick="ReplanAsync" disabled="@_busy">Пересмотреть план</button>
                             <button class="danger" @onclick="FinishWithoutValidation" disabled="@_busy">Завершить без валидации</button>
+                        </div>
+                    </section>
+                }
+                @if (Session.ExecutionInterrupted && Session.CurrentTask is not null)
+                {
+                    <section class="validation-recovery" role="alert">
+                        <strong>Выполнение прервано</strong>
+                        <details open><summary>Причина</summary><pre>@Session.CurrentTask.ExecutionResult</pre></details>
+                        <div>
+                            @if (Session.CurrentTask.ExecutionRetrySafe)
+                            {
+                                <button class="secondary" @onclick="RetryInterruptedExecutionAsync" disabled="@_busy">Повторить</button>
+                                <button class="secondary" @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_message))">Отправить уточнение</button>
+                            }
+                            else
+                            {
+                                <button class="secondary" @onclick="ValidateInterruptedExecutionAsync" disabled="@_busy">Перейти к валидации</button>
+                            }
+                            <button class="secondary" @onclick="ReplanInterruptedExecutionAsync" disabled="@_busy">Пересмотреть план</button>
+                            <button class="danger" @onclick="CancelTask" disabled="@_busy">Отменить</button>
                         </div>
                     </section>
                 }
@@ -229,6 +252,8 @@
                 await Session.RefinePlanAsync(text);
             else if (Session.AwaitingClarification)
                 await Session.SubmitClarificationAsync(text);
+            else if (Session.ExecutionInterrupted)
+                await Session.RefineInterruptedExecutionAsync(text);
             else
                 await Session.StartTaskAsync(text, new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
             UpdateTaskMetrics();
@@ -269,6 +294,30 @@
         finally { _busy = false; }
     }
 
+    private async Task RetryInterruptedExecutionAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.RetryInterruptedExecutionAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ValidateInterruptedExecutionAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.ValidateInterruptedExecutionAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ReplanInterruptedExecutionAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.ReplanInterruptedExecutionAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
     private async Task ReplanAsync()
     {
         _busy = true; _notice = null;
@@ -304,6 +353,7 @@
         {
             TaskState.AwaitingPlanApproval or TaskState.Clarification when Session.CurrentTask?.Clarification?.ResumeState != TaskState.Execution => TaskState.Planning,
             TaskState.AwaitingContinuation => Session.CurrentTask?.ResumeState == TaskState.Done ? TaskState.Validation : TaskState.Execution,
+            TaskState.ExecutionInterrupted => TaskState.Execution,
             TaskState.AwaitingValidationDecision => TaskState.Validation,
             TaskState.Cancelled or TaskState.Failed => (TaskState?)null,
             _ => current
@@ -324,6 +374,7 @@
         TaskState.Done => "Готово",
         TaskState.Cancelled => "Отменено",
         TaskState.Failed => "Ошибка",
+        TaskState.ExecutionInterrupted => "Выполнение прервано",
         _ => ""
     };
 

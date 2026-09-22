@@ -12,6 +12,7 @@ __pycache__/
 
 # Local build and test output
 artifacts/
+**/.verify-build*/
 
 # Runtime state and local databases
 *.db

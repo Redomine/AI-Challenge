@@ -18,6 +18,7 @@ public sealed class TaskWorkflow
     public TaskPauseOptions PauseOptions { get; set; } = new();
     public bool AwaitingPlanApproval => Context?.State == TaskState.AwaitingPlanApproval;
     public bool AwaitingClarification => Context?.State == TaskState.Clarification;
+    public bool ExecutionInterrupted => Context?.State == TaskState.ExecutionInterrupted;
     public bool IsPaused => Context?.State == TaskState.AwaitingContinuation;
     public bool ValidationFailed => Context?.State == TaskState.AwaitingValidationDecision;
     public AgentResponse? LastResponse { get; private set; }
@@ -93,8 +94,61 @@ public sealed class TaskWorkflow
     public async Task RetryExecutionAsync(CancellationToken cancellationToken = default)
     {
         EnsureState(TaskState.AwaitingValidationDecision);
+        if (!Context!.ExecutionRetrySafe)
+            throw new InvalidOperationException("Повтор выполнения заблокирован: инструмент уже вернул результат до сбоя.");
         Context = _machine.Transition(Context!, TaskState.Execution);
         await AdvanceAsync(cancellationToken);
+    }
+
+    public async Task RetryInterruptedExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureState(TaskState.ExecutionInterrupted);
+        if (!Context!.ExecutionRetrySafe)
+            throw new InvalidOperationException("Повтор выполнения заблокирован: до сбоя инструмент уже вернул результат. Перейдите к валидации или пересмотрите план.");
+        Context = _machine.Transition(
+            Context with
+            {
+                FailureReason = null,
+                DiagnosticTraces = null,
+                Checkpoint = (Context.Checkpoint ?? new ExecutionCheckpoint()) with { Attempt = (Context.Checkpoint?.Attempt ?? 0) + 1 }
+            },
+            TaskState.Execution);
+        await AdvanceAsync(cancellationToken);
+    }
+
+    public async Task RefineInterruptedExecutionAsync(string feedback, CancellationToken cancellationToken = default)
+    {
+        EnsureState(TaskState.ExecutionInterrupted);
+        if (!Context!.ExecutionRetrySafe)
+            throw new InvalidOperationException("Уточнение с повтором заблокировано: до сбоя инструмент уже вернул результат. Перейдите к валидации или пересмотрите план.");
+        if (string.IsNullOrWhiteSpace(feedback)) throw new ArgumentException("Уточнение не должно быть пустым.", nameof(feedback));
+        Context = _machine.Transition(
+            Context with
+            {
+                ExecutionResult = $"{Context.ExecutionResult}\n\nУточнение пользователя после сбоя: {feedback.Trim()}".Trim(),
+                FailureReason = null,
+                DiagnosticTraces = null,
+                Checkpoint = (Context.Checkpoint ?? new ExecutionCheckpoint()) with { Attempt = (Context.Checkpoint?.Attempt ?? 0) + 1 }
+            },
+            TaskState.Execution);
+        await AdvanceAsync(cancellationToken);
+    }
+
+    public async Task ValidateInterruptedExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureState(TaskState.ExecutionInterrupted);
+        if (Context!.ExecutionRetrySafe)
+            throw new InvalidOperationException("До сбоя нет результата инструмента, который можно проверить.");
+        Context = _machine.Transition(Context with { FailureReason = null }, TaskState.Validation);
+        await AdvanceAsync(cancellationToken);
+    }
+
+    public async Task ReplanInterruptedExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureState(TaskState.ExecutionInterrupted);
+        var reason = Context!.FailureReason;
+        Context = _machine.Transition(Context with { PlanApproved = false, FailureReason = null }, TaskState.Planning);
+        await BuildPlanAsync($"Выполнение было прервано и пользователь запросил новый план:\n{reason}", cancellationToken: cancellationToken);
     }
 
     public async Task ReplanAsync(CancellationToken cancellationToken = default)
@@ -202,6 +256,30 @@ public sealed class TaskWorkflow
             Context = _machine.Transition(Context! with { ExecutionResult = report, PlanApproved = false }, TaskState.Planning);
             LastResponse = CreateWorkflowResponse(report);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var traces = exception is AgentStageException stageException
+                ? stageException.Traces
+                : Array.Empty<string>();
+            var toolCompleted = traces.Any(trace => trace.StartsWith("Tool result:", StringComparison.Ordinal));
+            var report = toolCompleted
+                ? $"Выполнение прервано после получения результата инструмента. Автоматический повтор заблокирован, чтобы не повторить изменение модели.{Environment.NewLine}{exception.Message}"
+                : $"Выполнение прервано до подтверждённого результата инструмента. Задачу можно повторить, уточнить или перепланировать.{Environment.NewLine}{exception.Message}";
+            Context = _machine.Transition(
+                Context! with
+                {
+                    ExecutionResult = report,
+                    FailureReason = exception.Message,
+                    DiagnosticTraces = traces,
+                    ExecutionRetrySafe = !toolCompleted
+                },
+                TaskState.ExecutionInterrupted);
+            LastResponse = CreateWorkflowResponse(report, "task_state_execution_interrupted", traces);
+        }
     }
 
     private async Task ValidateAsync(CancellationToken cancellationToken)
@@ -221,7 +299,8 @@ public sealed class TaskWorkflow
             var target = outcome switch
             {
                 ValidationOutcome.Passed => TaskState.Done,
-                ValidationOutcome.CorrectionWithinPlan => TaskState.Execution,
+                ValidationOutcome.CorrectionWithinPlan when Context.ExecutionRetrySafe => TaskState.Execution,
+                ValidationOutcome.CorrectionWithinPlan => TaskState.AwaitingValidationDecision,
                 ValidationOutcome.PlanMustChange => TaskState.Planning,
                 _ => TaskState.AwaitingValidationDecision
             };
@@ -262,8 +341,11 @@ public sealed class TaskWorkflow
         return replan ? ValidationOutcome.PlanMustChange : ValidationOutcome.CorrectionWithinPlan;
     }
 
-    private static AgentResponse CreateWorkflowResponse(string content, string finishReason = "task_state_replan") => new(
-        new LlmResponse(content, finishReason, new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)), 0, true, 0);
+    private static AgentResponse CreateWorkflowResponse(
+        string content,
+        string finishReason = "task_state_replan",
+        IReadOnlyList<string>? traces = null) => new(
+        new LlmResponse(content, finishReason, new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)), 0, true, 0, traces);
 
     private void EnsureState(TaskState state)
     {

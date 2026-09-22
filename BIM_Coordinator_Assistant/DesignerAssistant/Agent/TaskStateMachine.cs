@@ -9,7 +9,8 @@ public sealed class TaskStateMachine
         {
             [TaskState.Planning] = Set(TaskState.AwaitingPlanApproval, TaskState.Clarification, TaskState.Failed, TaskState.Cancelled),
             [TaskState.AwaitingPlanApproval] = Set(TaskState.Planning, TaskState.Execution, TaskState.Cancelled),
-            [TaskState.Execution] = Set(TaskState.Validation, TaskState.Planning, TaskState.Clarification, TaskState.AwaitingContinuation, TaskState.Failed, TaskState.Cancelled),
+            [TaskState.Execution] = Set(TaskState.ExecutionInterrupted, TaskState.Validation, TaskState.Planning, TaskState.Clarification, TaskState.AwaitingContinuation, TaskState.Failed, TaskState.Cancelled),
+            [TaskState.ExecutionInterrupted] = Set(TaskState.Execution, TaskState.Validation, TaskState.Planning, TaskState.Cancelled),
             [TaskState.Clarification] = Set(TaskState.Planning, TaskState.Execution, TaskState.Cancelled),
             [TaskState.Validation] = Set(TaskState.Done, TaskState.Execution, TaskState.Planning, TaskState.AwaitingValidationDecision, TaskState.AwaitingContinuation, TaskState.Failed, TaskState.Cancelled),
             [TaskState.AwaitingValidationDecision] = Set(TaskState.Validation, TaskState.Execution, TaskState.Planning, TaskState.Done, TaskState.Cancelled),
