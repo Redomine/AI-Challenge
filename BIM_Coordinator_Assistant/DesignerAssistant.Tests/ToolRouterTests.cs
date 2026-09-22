@@ -255,6 +255,7 @@ public sealed class ToolRouterTests
             [
                 Tool("revit_custom_open_model"),
                 Tool("revit_custom_open_family"),
+                Tool("revit_custom_execute_pyrevit_command"),
                 Tool("revit_custom_get_bridge_operation"),
                 Tool("revit_custom_unload_links_locally")
             ]);
@@ -262,20 +263,21 @@ public sealed class ToolRouterTests
         Assert.Equal("answer", decision.Action);
         Assert.Equal(0, handler.RequestCount);
         Assert.Contains("путь к папке .pushbutton", decision.DirectResponse);
-        Assert.Contains("что должно быть выделено", decision.DirectResponse);
-        Assert.Contains("какой вид должен быть открыт", decision.DirectResponse);
-        Assert.Contains("Универсальный запуск", decision.DirectResponse);
+        Assert.Contains("Выделение не требуется по умолчанию", decision.DirectResponse);
+        Assert.Contains("requiresSelection=true", decision.DirectResponse);
+        Assert.Contains("активный вид", decision.DirectResponse);
+        Assert.Contains("только после подтверждения", decision.DirectResponse);
     }
 
     [Fact]
     public void GeneralToolSummaryContainsMcpBridgeUsageDescription()
     {
         var summary = ToolCapabilityCatalog.BuildUserSummary(
-            [Tool("revit_custom_open_model"), Tool("revit_custom_get_bridge_operation")],
+            [Tool("revit_custom_open_model"), Tool("revit_custom_execute_pyrevit_command"), Tool("revit_custom_get_bridge_operation")],
             ToolCapabilityScope.General);
 
         Assert.Contains("MCP Bridge:", summary);
-        Assert.Contains("pyRevit-командой-адаптером", summary);
+        Assert.Contains("запуск команды из папки .pushbutton", summary);
         Assert.Contains("путь к папке .pushbutton", summary);
     }
 
@@ -377,6 +379,7 @@ public sealed class ToolRouterTests
     [InlineData("Покажи git status", "workspace_run_command_recipe")]
     [InlineData("Открой C:\\Models\\Test.rvt", "revit_custom_open_model")]
     [InlineData("Загрузи семейство C:\\Families\\Valve.rfa", "revit_custom_open_family")]
+    [InlineData("Запусти C:\\Commands\\Расчет.pushbutton для выбранной системы", "revit_custom_execute_pyrevit_command")]
     [InlineData("Выгрузи для меня все связи", "revit_custom_unload_links_locally")]
     [InlineData("Выдели элементы 12345 и 67890", "revit_select_elements")]
     public async Task RoutesWorkspaceOperationsWithoutLlmRoundTrip(string question, string expectedTool)
@@ -388,7 +391,7 @@ public sealed class ToolRouterTests
         {
             "workspace_dotnet_test", "workspace_dotnet_build", "workspace_read_text_file", "workspace_search_text",
             "workspace_path_exists", "workspace_list_processes", "workspace_is_port_listening", "workspace_run_command_recipe",
-            "revit_custom_open_model", "revit_custom_open_family", "revit_custom_unload_links_locally", "revit_select_elements"
+            "revit_custom_open_model", "revit_custom_open_family", "revit_custom_execute_pyrevit_command", "revit_custom_unload_links_locally", "revit_select_elements"
         }.Select(Tool).ToArray();
 
         var decision = await router.RouteAsync([new ChatMessage("user", question)], tools);

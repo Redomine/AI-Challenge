@@ -163,6 +163,19 @@ public sealed class AssistantSession : IAsyncDisposable
         Changed?.Invoke();
     }
 
+    public async Task AppendErrorAsync(Exception exception, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        await AppendErrorAsync(exception.Message, cancellationToken);
+    }
+
+    public async Task AppendErrorAsync(string message, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(message)) message = "Неизвестная ошибка.";
+        await Agent.AppendAssistantMessageAsync($"Ошибка: {message.Trim()}", TaskState.Failed, cancellationToken);
+        Changed?.Invoke();
+    }
+
     public Task<MemorySnapshot> GetMemoryAsync(CancellationToken cancellationToken = default) =>
         Agent.GetMemoryAsync(cancellationToken);
 

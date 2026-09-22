@@ -262,7 +262,7 @@
     private async Task OpenProfilesAsync() { OpenSection("profiles"); await ReloadProfilesAsync(); }
     private async Task OpenInvariantsAsync() { OpenSection("invariants"); _invariants = await Session.GetInvariantsAsync(); }
     private async Task OpenMemoryAsync() { OpenSection("memory"); _memory = await Session.GetMemoryAsync(); }
-    private async Task OpenRevitAsync() { OpenSection("revit"); try { _revitSessions = await Session.GetRevitSessionsAsync(); } catch (Exception e) { _notice = e.Message; } }
+    private async Task OpenRevitAsync() { OpenSection("revit"); try { _revitSessions = await Session.GetRevitSessionsAsync(); } catch (Exception e) { await ReportErrorAsync(e); } }
 
     private async Task SendAsync()
     {
@@ -280,105 +280,105 @@
                 await Session.RefineInterruptedExecutionAsync(text);
             else
                 await Session.StartTaskAsync(text, new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
-            UpdateTaskMetrics();
+            await UpdateTaskMetricsAsync();
         }
-        catch (Exception e) { _notice = e.Message; }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task ApprovePlanAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.ApprovePlanAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.ApprovePlanAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task RetryPlanningAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.RetryPlanningAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.RetryPlanningAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task ContinueTaskAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.ContinueTaskAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.ContinueTaskAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task RetryValidationAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.RetryValidationAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.RetryValidationAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task RetryExecutionAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.RetryExecutionAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.RetryExecutionAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task RetryInterruptedExecutionAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.RetryInterruptedExecutionAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.RetryInterruptedExecutionAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task ValidateInterruptedExecutionAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.ValidateInterruptedExecutionAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.ValidateInterruptedExecutionAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task ReplanInterruptedExecutionAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.ReplanInterruptedExecutionAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.ReplanInterruptedExecutionAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
     private async Task ReplanAsync()
     {
         _busy = true; _notice = null;
-        try { await Session.ReplanAsync(); UpdateTaskMetrics(); }
-        catch (Exception e) { _notice = e.Message; }
+        try { await Session.ReplanAsync(); await UpdateTaskMetricsAsync(); }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
     }
 
-    private void FinishWithoutValidation()
+    private async Task FinishWithoutValidation()
     {
         Session.FinishWithoutValidation();
-        UpdateTaskMetrics();
+        await UpdateTaskMetricsAsync();
         _notice = "Задача завершена без успешной валидации по решению пользователя.";
     }
 
     private async Task CancelTask()
     {
         await Session.CancelTaskAsync();
-        UpdateTaskMetrics();
+        await UpdateTaskMetricsAsync();
     }
     private bool TaskIsActive => Session.CurrentTask is { State: not (TaskState.Done or TaskState.Cancelled or TaskState.Failed) };
-    private void UpdateTaskMetrics()
+    private async Task UpdateTaskMetricsAsync()
     {
         var response = Session.LastTaskResponse;
         if (response is null || Session.CurrentTask is null) return;
         _lastToolTraces = response.ToolTraces ?? [];
         _lastUsage = $"Этап: {Session.CurrentTask.State}; отправлено ≈{response.SentHistoryTokens:N0} токенов";
         if (response.ModelResponse.FinishReason == "task_state_validation_error")
-            _notice = response.ModelResponse.Content;
+            await Session.AppendErrorAsync(response.ModelResponse.Content);
     }
 
     private string TaskStageClass(TaskState state)
@@ -426,6 +426,7 @@
             TaskState.Clarification => "Ассистент · Уточнение",
             TaskState.Validation => "Ассистент · Валидация",
             TaskState.Done => "Ассистент · Итог",
+            TaskState.Failed => "Ассистент · Ошибка",
             _ => "Ассистент"
         };
 
@@ -433,7 +434,9 @@
         message.Role == "assistant" && message.Stage is TaskState.Planning or TaskState.Execution;
 
     private bool ShouldExpandStageMessage(ChatMessage message) =>
-        message.Stage == TaskState.Planning && Session.AwaitingPlanApproval && message == Session.History.LastOrDefault();
+        message.Stage == TaskState.Planning &&
+        Session.AwaitingPlanApproval &&
+        message == Session.History.LastOrDefault(item => item.Role == "assistant" && item.Stage == TaskState.Planning);
 
     private async Task ClearHistoryAsync() { await Session.ClearHistoryAsync(); _notice = "Диалог очищен."; }
     private async Task CompleteTaskAsync() { await Session.CompleteTaskAsync(); _memory = await Session.GetMemoryAsync(); _notice = "Рабочая память очищена."; }
@@ -441,8 +444,14 @@
     {
         _busy = true; _notice = null;
         try { await Session.SaveInvariantsAsync(_invariants); _notice = "Инварианты сохранены."; }
-        catch (Exception e) { _notice = e.Message; }
+        catch (Exception e) { await ReportErrorAsync(e); }
         finally { _busy = false; }
+    }
+
+    private async Task ReportErrorAsync(Exception exception)
+    {
+        try { await Session.AppendErrorAsync(exception); }
+        catch { _notice = exception.Message; }
     }
     private void NewProfile() { _isNewProfile = true; _editingProfile = null; _profileDraft = new(); }
     private void EditProfile(UserProfile profile) { _isNewProfile = false; _editingProfile = profile; _profileDraft = UserProfileDraft.From(profile); }

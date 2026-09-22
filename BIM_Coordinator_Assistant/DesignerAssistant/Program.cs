@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using DesignerAssistant.Agent;
 using DesignerAssistant.Configuration;
 using DesignerAssistant.Llm;
@@ -23,7 +24,7 @@ try
 {
     if (args.Contains("--revit-smoke", StringComparer.OrdinalIgnoreCase))
     {
-        await using var smokeClient = new RevitMcpClient();
+        await using var smokeClient = new RevitMcpClient(confirmWriteAsync: _ => Task.FromResult(true));
         Console.WriteLine("Targets:");
         Console.WriteLine(await smokeClient.ListTargetsAsync(cancellationSource.Token));
         if (args.Contains("--tools", StringComparer.OrdinalIgnoreCase))
@@ -31,6 +32,47 @@ try
             Console.WriteLine("Allowed tools:");
             Console.WriteLine(await smokeClient.DescribeToolsAsync(cancellationSource.Token));
             return;
+        }
+        var executeIndex = Array.FindIndex(args, value => value.Equals("--execute-pyrevit", StringComparison.OrdinalIgnoreCase));
+        if (executeIndex >= 0)
+        {
+            if (executeIndex + 1 >= args.Length) throw new ArgumentException("После --execute-pyrevit укажите путь к папке .pushbutton.");
+            await smokeClient.GetToolsAsync(cancellationSource.Token);
+            Console.WriteLine("Selection:");
+            Console.WriteLine(await smokeClient.SelectionAsync(cancellationSource.Token));
+            var executeArguments = JsonSerializer.SerializeToElement(new
+            {
+                commandPath = Path.GetFullPath(args[executeIndex + 1]),
+                requiresSelection = true
+            });
+            var queued = await smokeClient.InvokeAsync(
+                "revit_custom_execute_pyrevit_command",
+                executeArguments,
+                cancellationSource.Token);
+            Console.WriteLine("Execute:");
+            Console.WriteLine(queued);
+            using var queuedDocument = JsonDocument.Parse(queued);
+            var runId = queuedDocument.RootElement.GetProperty("runId").GetString()
+                ?? throw new InvalidDataException("Bridge не вернул runId.");
+            for (var attempt = 1; attempt <= 120; attempt++)
+            {
+                await Task.Delay(500, cancellationSource.Token);
+                var status = await smokeClient.CallAsync(
+                    "revit_custom_get_bridge_operation",
+                    new Dictionary<string, object?> { ["runId"] = runId },
+                    cancellationSource.Token);
+                using var statusDocument = JsonDocument.Parse(status);
+                var state = statusDocument.RootElement.GetProperty("status").GetString();
+                if (state is not ("queued" or "running"))
+                {
+                    Console.WriteLine("Final:");
+                    Console.WriteLine(status);
+                    return;
+                }
+                if (attempt is 1 or 10 or 20 or 40 or 80 or 120)
+                    Console.WriteLine($"Poll {attempt}: {status}");
+            }
+            throw new TimeoutException("Bridge не завершил операцию за 60 секунд.");
         }
         var smokeYear = args.SkipWhile(value => !value.Equals("--revit-smoke", StringComparison.OrdinalIgnoreCase)).Skip(1).Select(value => int.TryParse(value, out var year) ? year : 0).FirstOrDefault();
         if (smokeYear is 2022 or 2024)

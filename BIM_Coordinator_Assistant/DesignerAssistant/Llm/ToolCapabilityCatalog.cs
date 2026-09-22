@@ -50,6 +50,7 @@ public static class ToolCapabilityCatalog
             ["revit_select_elements"] = Ui("revit_select_elements", "Выделить элементы", "Заменяет текущее выделение в интерфейсе Revit указанными ElementId и при необходимости приближает их; модель не изменяет.", "Интерфейс Revit", ToolCapabilityScope.Element, "Выдели элементы 12345 и 67890"),
             ["revit_custom_open_model"] = Write("revit_custom_open_model", "Открыть модель через MCP Bridge", "Передаёт проверенное задание pyRevit-команде MCP Bridge и открывает RVT; поддерживает отсоединение, настройку рабочих наборов и последующую локальную выгрузку связей.", "MCP Bridge", ToolCapabilityScope.General, "Открой C:\\Models\\Project.rvt с отсоединением и закрой все рабочие наборы"),
             ["revit_custom_open_family"] = Write("revit_custom_open_family", "Открыть семейство через MCP Bridge", "Передаёт проверенное задание pyRevit-команде MCP Bridge для открытия RFA, не закрывая другие документы.", "MCP Bridge", ToolCapabilityScope.General, "Открой семейство C:\\Families\\Valve.rfa"),
+            ["revit_custom_execute_pyrevit_command"] = Write("revit_custom_execute_pyrevit_command", "Запустить pyRevit-команду через MCP Bridge", "Запускает script.py из указанной папки .pushbutton в текущем документе. Выделение необязательно: requiresSelection=true указывается только для команды, которой действительно нужны выбранные элементы; активный вид и существующее выделение сохраняются.", "MCP Bridge", ToolCapabilityScope.General, "Запусти pyRevit-команду C:\\Extensions\\Tools.tab\\Run.pushbutton без обязательного выделения"),
             ["revit_custom_get_bridge_operation"] = Read("revit_custom_get_bridge_operation", "Проверить операцию MCP Bridge", "По runId возвращает фактическое состояние, результат и обработанные диалоги операции pyRevit.", "MCP Bridge", ToolCapabilityScope.General, "Проверь результат операции открытия"),
             ["revit_custom_unload_links_locally"] = Write("revit_custom_unload_links_locally", "Выгрузить связи локально", "Выгружает все загруженные связи Revit только для текущего пользователя в активной локальной модели.", "Связи Revit", ToolCapabilityScope.General, "Выгрузи для меня все связи Revit"),
 
@@ -175,9 +176,10 @@ public static class ToolCapabilityCatalog
         var supported = new List<string>();
         if (available.Contains("revit_custom_open_model")) supported.Add("открытие RVT с настройками отсоединения и рабочих наборов");
         if (available.Contains("revit_custom_open_family")) supported.Add("открытие RFA");
+        if (available.Contains("revit_custom_execute_pyrevit_command")) supported.Add("запуск команды из папки .pushbutton с необязательным выделением");
         if (available.Contains("revit_custom_unload_links_locally")) supported.Add("локальная выгрузка Revit-связей");
         var supportedText = supported.Count == 0 ? "готовые операции сейчас не обнаружены" : string.Join(", ", supported);
-        return $"MCP Bridge связывает MCP-инструмент с отдельной pyRevit-командой-адаптером. Сейчас поддерживаются: {supportedText}. Для новой pyRevit-команды передайте путь к папке .pushbutton, что должно быть выделено или какой вид должен быть открыт, входные значения, ожидаемый результат и возможные диалоги. Универсальный запуск произвольного script.py без адаптера не заявлен: агент сначала должен проверить существующий инструмент либо подготовить отдельный безопасный адаптер.";
+        return $"MCP Bridge связывает MCP-инструменты с pyRevit. Сейчас поддерживаются: {supportedText}. Для запуска передайте путь к папке .pushbutton. Выделение не требуется по умолчанию; requiresSelection=true нужно указывать только для скрипта, которому действительно нужны выбранные элементы. При необходимости заранее подготовьте активный вид. Команда выполняется только после подтверждения; результат проверяется по runId.";
     }
 
     public static string BuildCompactRouterCatalogue(IReadOnlyCollection<ToolDefinition> tools) =>

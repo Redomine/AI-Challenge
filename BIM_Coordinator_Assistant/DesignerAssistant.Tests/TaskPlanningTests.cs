@@ -36,29 +36,6 @@ public sealed class TaskPlanningTests
     }
 
     [Fact]
-    public async Task PushbuttonRequestWithoutExecutionAdapterAsksToCreateAdapterLocally()
-    {
-        var llm = new CapturingLlm();
-        var agent = new DesignAssistantAgent(
-            llm,
-            new InMemoryChatHistoryStore(),
-            new InMemoryMemoryStore(),
-            "Базовая инструкция",
-            new AppOptions("key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10),
-            new CatalogueProvider());
-        await agent.InitializeAsync();
-
-        var response = await agent.PlanTaskAsync(@"Запусти C:\Commands\Расчет.pushbutton для выбранной системы");
-
-        Assert.Empty(llm.Requests);
-        Assert.StartsWith("[CLARIFY]", response.ModelResponse.Content);
-        Assert.Contains("нет зарегистрированного MCP-инструмента", response.ModelResponse.Content);
-        Assert.Contains("текущим выделением", response.ModelResponse.Content);
-        Assert.Equal("pyrevit_adapter_required", response.ModelResponse.FinishReason);
-        Assert.Equal(2, agent.GetHistory().Count);
-    }
-
-    [Fact]
     public async Task PlanningReceivesCurrentToolCatalogueWithoutExposingToolCalls()
     {
         var llm = new CapturingLlm();

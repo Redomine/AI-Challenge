@@ -268,6 +268,10 @@ public sealed class ToolRouter
         if (Has("revit_custom_open_family") &&
             Regex.IsMatch(message, @"\b(открой|открыть|загрузи|загрузить)\b.{0,180}\.rfa\b|\.rfa\b.{0,180}\b(открой|открыть|загрузи|загрузить)\b", RegexOptions.IgnoreCase))
             return "revit_custom_open_family";
+        if (Has("revit_custom_execute_pyrevit_command") &&
+            Regex.IsMatch(message, @"\.pushbutton\b", RegexOptions.IgnoreCase) &&
+            Regex.IsMatch(message, @"\b(запусти|запустить|выполни|выполнить|расчет|расчёт)\w*\b", RegexOptions.IgnoreCase))
+            return "revit_custom_execute_pyrevit_command";
         if (Has("revit_custom_unload_links_locally") &&
             Regex.IsMatch(message, @"\b(выгрузи|выгрузить|отключи|отключить)\b.{0,60}\b(все\s+)?(revit[- ]?)?(связи|линки)\b", RegexOptions.IgnoreCase))
             return "revit_custom_unload_links_locally";
