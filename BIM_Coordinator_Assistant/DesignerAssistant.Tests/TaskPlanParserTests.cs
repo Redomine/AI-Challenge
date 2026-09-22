@@ -56,6 +56,17 @@ public sealed class TaskPlanParserTests
         Assert.Contains("ids", error.Message);
     }
 
+    [Fact]
+    public void AcceptsClarificationInsteadOfExecutableSteps()
+    {
+        var plan = TaskPlanParser.ParseAndValidate(
+            """{"summary":"Уточнить значение","clarification":"Какое значение записать?","steps":[]}""",
+            [Tool("write")]);
+
+        Assert.Empty(plan.Steps);
+        Assert.Equal("[CLARIFY] Какое значение записать?", plan.ToDisplayText());
+    }
+
     private static ToolDefinition Tool(string name, params string[] required) => new(
         name,
         "Тест",

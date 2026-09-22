@@ -100,6 +100,27 @@ public sealed class ToolRouterTests
     }
 
     [Theory]
+    [InlineData("Что за документ открыт")]
+    [InlineData("Какой проект сейчас открыт?")]
+    [InlineData("Покажи текущий файл Revit")]
+    public async Task DocumentInfoRequestReturnsExactNoToolAnswerWhenToolIsUnavailable(string question)
+    {
+        var handler = new FakeHandler(Response("revit_get_current_view_info"));
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", question)],
+            [Tool("revit_get_current_view_info")]);
+
+        Assert.Equal("no_tool", decision.Action);
+        Assert.Null(decision.ToolName);
+        Assert.Equal("У меня нет подходящих инструментов", decision.DirectResponse);
+        Assert.Equal(0, decision.BilledTokens);
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Theory]
     [InlineData("Что за элементы выбраны?")]
     [InlineData("Какие объекты сейчас выделены?")]
     [InlineData("У меня выбрано 7 элементов. Запиши им комментарий")]
@@ -302,6 +323,34 @@ public sealed class ToolRouterTests
     public void DiscoveredActionToolsRequireConfirmation(string name)
     {
         Assert.True(ToolCapabilityCatalog.IsWriteTool(Tool(name)));
+    }
+
+    [Theory]
+    [InlineData("Запусти тесты проекта DesignerAssistant.Tests", "workspace_dotnet_test")]
+    [InlineData("Выполни dotnet test для решения", "workspace_dotnet_test")]
+    [InlineData("Собери проект DesignerAssistant.Web", "workspace_dotnet_build")]
+    [InlineData("Прочитай файл Program.cs", "workspace_read_text_file")]
+    [InlineData("Найди использования TaskWorkflow в проекте", "workspace_search_text")]
+    [InlineData("Существует ли файл DesignerAssistant.csproj?", "workspace_path_exists")]
+    [InlineData("Запущен ли процесс Revit?", "workspace_list_processes")]
+    [InlineData("Порт 5080 сейчас слушается?", "workspace_is_port_listening")]
+    [InlineData("Покажи git status", "workspace_run_command_recipe")]
+    public async Task RoutesWorkspaceOperationsWithoutLlmRoundTrip(string question, string expectedTool)
+    {
+        var handler = new FakeHandler(Response("workspace_dotnet_test"));
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+        var tools = new[]
+        {
+            "workspace_dotnet_test", "workspace_dotnet_build", "workspace_read_text_file", "workspace_search_text",
+            "workspace_path_exists", "workspace_list_processes", "workspace_is_port_listening", "workspace_run_command_recipe"
+        }.Select(Tool).ToArray();
+
+        var decision = await router.RouteAsync([new ChatMessage("user", question)], tools);
+
+        Assert.Equal("call_tool", decision.Action);
+        Assert.Equal(expectedTool, decision.ToolName);
+        Assert.Equal(0, handler.RequestCount);
     }
 
     private static ToolDefinition Tool(string name) => new(

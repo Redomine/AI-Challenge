@@ -25,6 +25,15 @@ public static class ToolCapabilityCatalog
     private static readonly IReadOnlyDictionary<string, ToolCapability> Known =
         new Dictionary<string, ToolCapability>(StringComparer.Ordinal)
         {
+            ["workspace_list_files"] = Read("workspace_list_files", "Показать файлы проекта", "Перечисляет файлы внутри рабочего репозитория без чтения содержимого.", "Рабочий проект", ToolCapabilityScope.General, "Покажи C#-файлы проекта"),
+            ["workspace_read_text_file"] = Read("workspace_read_text_file", "Прочитать файл проекта", "Читает небольшой текстовый UTF-8 файл внутри рабочего репозитория; секретные и бинарные файлы запрещены.", "Рабочий проект", ToolCapabilityScope.General, "Прочитай DesignerAssistant/Program.cs"),
+            ["workspace_search_text"] = Read("workspace_search_text", "Найти текст в проекте", "Ищет строку в небольших текстовых файлах рабочего репозитория.", "Рабочий проект", ToolCapabilityScope.General, "Найди использования TaskWorkflow"),
+            ["workspace_path_exists"] = Read("workspace_path_exists", "Проверить путь проекта", "Проверяет существование файла или каталога внутри рабочего репозитория.", "Рабочий проект", ToolCapabilityScope.General, "Существует ли проект DesignerAssistant.Tests?"),
+            ["workspace_dotnet_build"] = Read("workspace_dotnet_build", "Собрать .NET-проект", "Запускает dotnet build для выбранного проекта и возвращает фактический код завершения, stdout и stderr.", "Сборка и тесты", ToolCapabilityScope.General, "Собери DesignerAssistant.Web"),
+            ["workspace_dotnet_test"] = Read("workspace_dotnet_test", "Запустить .NET-тесты", "Запускает dotnet test для выбранного проекта и возвращает фактический код завершения, stdout и stderr.", "Сборка и тесты", ToolCapabilityScope.General, "Запусти тесты TaskWorkflowTests"),
+            ["workspace_run_command_recipe"] = Read("workspace_run_command_recipe", "Запустить разрешённую системную проверку", "Запускает только фиксированные read-only рецепты Git или dotnet; произвольные команды запрещены.", "Среда выполнения", ToolCapabilityScope.General, "Покажи git status"),
+            ["workspace_list_processes"] = Read("workspace_list_processes", "Проверить процессы", "Показывает безопасный список процессов без их командных строк.", "Среда выполнения", ToolCapabilityScope.General, "Запущен ли Revit?"),
+            ["workspace_is_port_listening"] = Read("workspace_is_port_listening", "Проверить локальный порт", "Проверяет, прослушивается ли указанный локальный TCP-порт.", "Среда выполнения", ToolCapabilityScope.General, "Слушается ли порт 5080?"),
             ["revit_list_available_targets"] = Read("revit_list_available_targets", "Показать доступные сеансы Revit", "Находит запущенные сеансы Revit, к которым может подключиться помощник.", "Подключение", ToolCapabilityScope.General, "Какие сеансы Revit доступны?"),
             ["revit_get_current_target"] = Read("revit_get_current_target", "Показать активный сеанс Revit", "Сообщает, к какому сеансу и документу Revit сейчас подключён помощник.", "Подключение", ToolCapabilityScope.General, "К какому Revit ты подключён?"),
             ["revit_switch_target"] = Read("revit_switch_target", "Переключить сеанс Revit", "Переключает подключение помощника на доступную версию или сеанс Revit; модель не изменяет.", "Подключение", ToolCapabilityScope.General, "Переключись на Revit 2022"),
@@ -129,7 +138,7 @@ public static class ToolCapabilityCatalog
         };
         if (selected.Count == 0)
         {
-            return $"{heading}\n\nВ текущем каталоге Revit нет инструментов для этой области. Я не буду придумывать недоступные операции.";
+            return $"{heading}\n\nВ текущем каталоге нет инструментов для этой области. Я не буду придумывать недоступные операции.";
         }
 
         var builder = new StringBuilder(heading);
@@ -145,7 +154,7 @@ public static class ToolCapabilityCatalog
             }
         }
         builder.AppendLine().AppendLine()
-            .Append("Перечень сформирован по текущему каталогу rvt-mcp. Операции без изменения модели выполняются сразу; изменяющие — только по явной команде и после подтверждения.");
+            .Append("Перечень сформирован по текущему каталогу инструментов. Операции без изменения модели выполняются сразу; изменяющие модель Revit — только по явной команде и после подтверждения.");
         return builder.ToString();
     }
 

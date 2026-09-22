@@ -87,6 +87,29 @@ public sealed class ToolRouter
                 0,
                 0);
         }
+        if (IsDocumentInfoRequest(latestUserMessage))
+        {
+            const string projectInfoTool = "revit_get_project_info";
+            if (toolNames.Contains(projectInfoTool, StringComparer.Ordinal))
+            {
+                return new ToolRouteDecision(
+                    "call_tool",
+                    projectInfoTool,
+                    "Запрос сведений об открытом документе направлен в специализированный инструмент.",
+                    0,
+                    0,
+                    0);
+            }
+
+            return new ToolRouteDecision(
+                "no_tool",
+                null,
+                "В текущем MCP-каталоге нет инструмента чтения сведений об открытом документе.",
+                0,
+                0,
+                0,
+                "У меня нет подходящих инструментов");
+        }
         var deterministicTool = MatchDeterministicRoute(latestUserMessage, toolNames);
         if (deterministicTool is not null)
         {
@@ -107,7 +130,7 @@ public sealed class ToolRouter
             ["type"] = "object",
             ["properties"] = new Dictionary<string, object?>
             {
-                ["action"] = new { type = "string", @enum = new[] { "answer", "call_tool", "clarify" } },
+                ["action"] = new { type = "string", @enum = new[] { "answer", "call_tool", "clarify", "no_tool" } },
                 ["tool"] = new { type = "string", @enum = toolNames },
                 ["reason"] = new { type = "string" },
                 ["clarification"] = new { type = "string" }
@@ -119,7 +142,7 @@ public sealed class ToolRouter
             new
             {
                 role = "system",
-                content = "Ты маршрутизатор инструментов. Выбери call_tool, если для ответа нужны актуальные данные Revit или пользователь явно просит выполнить однозначное действие. Выбери answer для разговора, объяснения или данных, уже присутствующих в диалоге. Выбери clarify, если возможна изменяющая модель операция, но неясны намерение, объект, действие или обязательное значение; сформулируй один короткий вопрос в clarification и не выбирай инструмент. Вопросы о названиях, назначении, параметрах или доступности инструментов всегда получают answer и никогда не вызывают инструмент. Слова 'команда', 'вызов', 'скрипт' и название инструмента сами по себе не означают просьбу выполнить действие. Не отвечай на задачу пользователя."
+                content = "Ты маршрутизатор инструментов. Выбери call_tool, если для ответа нужны актуальные данные Revit или workspace, либо пользователь явно просит выполнить однозначное действие и подходящий инструмент есть в каталоге. Выбери no_tool, если запрос требует актуальных данных или действия, но подходящего инструмента в каталоге нет. Выбери answer для разговора, объяснения или данных, уже присутствующих в диалоге. Выбери clarify, если для операции не определён объект, путь, проект, тест, обязательное значение или намерение изменить модель; сформулируй один короткий вопрос в clarification и не выбирай инструмент. Вопросы о названиях, назначении, параметрах или доступности инструментов всегда получают answer и никогда не вызывают инструмент. Слова 'команда', 'вызов', 'скрипт' и название инструмента сами по себе не означают просьбу выполнить действие. Не отвечай на задачу пользователя."
             },
             new
             {
@@ -175,6 +198,10 @@ public sealed class ToolRouter
         {
             clarification = "Уточните, пожалуйста, какое именно изменение нужно выполнить, над каким объектом и с каким значением.";
         }
+        if (action == "no_tool")
+        {
+            clarification = "У меня нет подходящих инструментов";
+        }
 
         return new ToolRouteDecision(
             action,
@@ -183,7 +210,7 @@ public sealed class ToolRouter
             ReadInt(usage, "prompt_tokens"),
             ReadInt(usage, "completion_tokens"),
             ReadInt(usage, "total_tokens"),
-            action == "clarify" ? clarification : null);
+            action is "clarify" or "no_tool" ? clarification : null);
     }
 
     private static string ExtractTaskQuery(string message)
@@ -200,6 +227,30 @@ public sealed class ToolRouter
     private static string? MatchDeterministicRoute(string message, IReadOnlyCollection<string> toolNames)
     {
         bool Has(string name) => toolNames.Contains(name, StringComparer.Ordinal);
+        if (Has("workspace_dotnet_test") &&
+            Regex.IsMatch(message, @"\b(запусти|выполни|прогони|проверь)\w*\b.{0,45}\bтест\w*\b|\bdotnet\s+test\b", RegexOptions.IgnoreCase))
+            return "workspace_dotnet_test";
+        if (Has("workspace_dotnet_build") &&
+            Regex.IsMatch(message, @"\b(собери|сборк\w*|build)\b.{0,60}\b(проект\w*|решени\w*|solution|csproj|sln)?\b", RegexOptions.IgnoreCase))
+            return "workspace_dotnet_build";
+        if (Has("workspace_read_text_file") &&
+            Regex.IsMatch(message, @"\b(прочитай|открой|покажи содержимое)\b.{0,45}\b(файл\w*|\.cs|\.json|\.md|\.razor)\b", RegexOptions.IgnoreCase))
+            return "workspace_read_text_file";
+        if (Has("workspace_search_text") &&
+            Regex.IsMatch(message, @"\b(найди|поищи)\b.{0,60}\b(в проекте|в файлах|использовани\w*|упоминани\w*)\b", RegexOptions.IgnoreCase))
+            return "workspace_search_text";
+        if (Has("workspace_path_exists") &&
+            Regex.IsMatch(message, @"\b(существует|есть ли)\b.{0,60}\b(файл\w*|каталог\w*|папк\w*|проект\w*)\b", RegexOptions.IgnoreCase))
+            return "workspace_path_exists";
+        if (Has("workspace_list_processes") &&
+            Regex.IsMatch(message, @"\b(запущен|работает|процесс)\w*\b.{0,35}\b(revit|rider|dotnet|процесс\w*)\b", RegexOptions.IgnoreCase))
+            return "workspace_list_processes";
+        if (Has("workspace_is_port_listening") &&
+            Regex.IsMatch(message, @"\b(порт)\s+\d{1,5}\b.{0,30}\b(слуш|доступ|открыт|работает)\w*\b|\b(слуш|доступ|открыт)\w*\b.{0,30}\bпорт\s+\d{1,5}\b", RegexOptions.IgnoreCase))
+            return "workspace_is_port_listening";
+        if (Has("workspace_run_command_recipe") &&
+            Regex.IsMatch(message, @"\b(git\s+status|git\s+diff|текущ\w*\s+ветк\w*|dotnet\s+--info|сведени\w*\s+о\s+dotnet)\b", RegexOptions.IgnoreCase))
+            return "workspace_run_command_recipe";
         if (Has("revit_get_element_details") &&
             Regex.IsMatch(message, @"(?<!\d)\d{5,}(?!\d)") &&
             Regex.IsMatch(message, @"элемент|объект|что\s+(это|за)", RegexOptions.IgnoreCase))
@@ -215,6 +266,13 @@ public sealed class ToolRouter
 
         return null;
     }
+
+    private static bool IsDocumentInfoRequest(string message) =>
+        !string.IsNullOrWhiteSpace(message) &&
+        Regex.IsMatch(
+            message,
+            @"\b(что|какой|который|назови|покажи)\b.{0,45}\b(документ|проект|файл)\b.{0,25}\b(открыт|загружен|активн|текущ)\w*\b|\b(открыт|активн|текущ)\w*\s+(документ|проект|файл)\b",
+            RegexOptions.IgnoreCase);
 
     private static bool IsViewInventoryRequest(string message)
     {

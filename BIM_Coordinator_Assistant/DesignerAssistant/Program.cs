@@ -7,6 +7,7 @@ using DesignerAssistant.Models;
 using DesignerAssistant.Prompts;
 using DesignerAssistant.Revit;
 using DesignerAssistant.Storage;
+using DesignerAssistant.Tools;
 
 Console.InputEncoding = Encoding.UTF8;
 Console.OutputEncoding = Encoding.UTF8;
@@ -53,13 +54,15 @@ try
     IMemoryStore memoryStore = new SqliteMemoryStore(options.DatabasePath);
     IUserProfileStore profileStore = new SqliteUserProfileStore(options.DatabasePath);
     await using var revit = new RevitMcpClient(confirmWriteAsync: ConfirmRevitWriteAsync);
+    var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(Environment.CurrentDirectory));
+    var tools = new CompositeToolProvider(revit, workspace);
     IDesignAssistantAgent agent = new DesignAssistantAgent(
         llmClient,
         historyStore,
         memoryStore,
         DesignerAssistantPrompt.Text,
         options,
-        revit,
+        tools,
         profileStore);
     await agent.InitializeAsync(cancellationSource.Token);
 

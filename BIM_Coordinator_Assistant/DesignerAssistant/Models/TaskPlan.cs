@@ -3,10 +3,11 @@ using System.Text.Json;
 
 namespace DesignerAssistant.Models;
 
-public sealed record TaskPlan(string Summary, IReadOnlyList<TaskPlanStep> Steps)
+public sealed record TaskPlan(string Summary, IReadOnlyList<TaskPlanStep> Steps, string? Clarification = null)
 {
     public string ToDisplayText()
     {
+        if (!string.IsNullOrWhiteSpace(Clarification)) return $"[CLARIFY] {Clarification.Trim()}";
         var text = new StringBuilder(Summary.Trim());
         for (var index = 0; index < Steps.Count; index++)
         {

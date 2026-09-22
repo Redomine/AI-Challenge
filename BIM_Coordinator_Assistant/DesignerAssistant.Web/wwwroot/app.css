@@ -56,8 +56,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .composer { padding: 14px max(28px, calc((100% - 900px) / 2)) 18px; background: #fff; border-top: 1px solid #d9dfdc; }
 .composer textarea, .editor-form textarea, .editor-form input { width: 100%; resize: vertical; padding: 11px 12px; color: #1d2522; background: #fff; border: 1px solid #bfc9c4; border-radius: 5px; outline: none; }
 .composer textarea:focus, .editor-form textarea:focus, .editor-form input:focus { border-color: #3b7659; box-shadow: 0 0 0 3px rgba(59,118,89,.1); }
-.composer-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 9px; }
+.composer-actions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; margin-top: 9px; }
 .composer-actions span { color: #748078; font-size: 12px; }
+.composer-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .tool-details { margin-bottom: 10px; color: #5c6963; font-size: 12px; }
 .tool-details summary { cursor: pointer; font-weight: 700; }
 .tool-details pre { max-height: 150px; overflow: auto; margin: 7px 0; padding: 8px; background: #eef1ef; border: 1px solid #d6ddda; border-radius: 4px; white-space: pre-wrap; }

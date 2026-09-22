@@ -39,7 +39,7 @@
                 <button class="secondary" @onclick="ClearHistoryAsync" disabled="@_busy">Очистить диалог</button>
             </header>
             <section class="task-flow" aria-label="Этапы задачи">
-                @foreach (var state in Enum.GetValues<TaskState>())
+                @foreach (var state in PrimaryTaskStages)
                 {
                     <div class="task-stage @TaskStageClass(state)"><strong>@state</strong><span>@TaskStageCaption(state)</span></div>
                 }
@@ -71,6 +71,8 @@
                         <details open><summary>Детали ошибки</summary><pre>@Session.CurrentTask.ValidationResult</pre></details>
                         <div>
                             <button class="secondary" @onclick="RetryValidationAsync" disabled="@_busy">Повторить валидацию</button>
+                            <button class="secondary" @onclick="RetryExecutionAsync" disabled="@_busy">Повторить выполнение</button>
+                            <button class="secondary" @onclick="ReplanAsync" disabled="@_busy">Пересмотреть план</button>
                             <button class="danger" @onclick="FinishWithoutValidation" disabled="@_busy">Завершить без валидации</button>
                         </div>
                     </section>
@@ -82,7 +84,22 @@
                 <textarea @bind="_message" @bind:event="oninput" placeholder="Сообщение ассистенту" rows="3" disabled="@_busy"></textarea>
                 <div class="composer-actions">
                     <span>@(_lastUsage ?? "Enter в поле переносит строку")</span>
-                    @if (Session.IsTaskPaused && !Session.AwaitingPlanApproval && !Session.ValidationFailed)
+                    @if (Session.AwaitingPlanApproval)
+                    {
+                        <div class="composer-buttons">
+                            <button class="secondary" @onclick="CancelTask" disabled="@_busy">Отменить</button>
+                            <button class="secondary" @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_message))">Отправить уточнение</button>
+                            <button class="primary" @onclick="ApprovePlanAsync" disabled="@_busy">Согласовать</button>
+                        </div>
+                    }
+                    else if (Session.AwaitingClarification)
+                    {
+                        <div class="composer-buttons">
+                            <button class="secondary" @onclick="CancelTask" disabled="@_busy">Отменить</button>
+                            <button class="primary" @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_message))">Ответить</button>
+                        </div>
+                    }
+                    else if (Session.IsTaskPaused && !Session.ValidationFailed)
                     {
                         <button class="primary" @onclick="ContinueTaskAsync" disabled="@_busy">Продолжить</button>
                     }
@@ -173,18 +190,6 @@
     </div>
 }
 
-@if (Session.AwaitingPlanApproval && Session.CurrentTask is not null)
-{
-    <div class="modal-backdrop">
-        <section class="confirmation" role="dialog" aria-modal="true" aria-labelledby="plan-title">
-            <h2 id="plan-title">Согласование плана</h2>
-            <p>Агент не перейдёт к выполнению, пока вы не согласуете этот план.</p>
-            <pre>@Session.CurrentTask.Plan</pre>
-            <div><button class="secondary" @onclick="CancelTask" disabled="@_busy">Отклонить</button><button class="primary" @onclick="ApprovePlanAsync" disabled="@_busy">Согласовать и продолжить</button></div>
-        </section>
-    </div>
-}
-
 @code {
     private string _section = "chat";
     private string _message = "";
@@ -198,6 +203,7 @@
     private MemorySnapshot? _memory;
     private IReadOnlyList<RevitSession> _revitSessions = [];
     private IReadOnlyList<string> _lastToolTraces = [];
+    private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
     protected override async Task OnInitializedAsync()
     {
@@ -219,7 +225,12 @@
         _message = ""; _busy = true; _notice = null;
         try
         {
-            await Session.StartTaskAsync(text, new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
+            if (Session.AwaitingPlanApproval)
+                await Session.RefinePlanAsync(text);
+            else if (Session.AwaitingClarification)
+                await Session.SubmitClarificationAsync(text);
+            else
+                await Session.StartTaskAsync(text, new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
             UpdateTaskMetrics();
         }
         catch (Exception e) { _notice = e.Message; }
@@ -250,6 +261,22 @@
         finally { _busy = false; }
     }
 
+    private async Task RetryExecutionAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.RetryExecutionAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ReplanAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.ReplanAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
     private void FinishWithoutValidation()
     {
         Session.FinishWithoutValidation();
@@ -257,8 +284,8 @@
         _notice = "Задача завершена без успешной валидации по решению пользователя.";
     }
 
-    private void CancelTask() { Session.CancelTask(); _notice = "Задача отменена на стадии планирования."; }
-    private bool TaskIsActive => Session.CurrentTask is { State: not TaskState.Done };
+    private void CancelTask() { Session.CancelTask(); _notice = "Задача отменена."; }
+    private bool TaskIsActive => Session.CurrentTask is { State: not (TaskState.Done or TaskState.Cancelled or TaskState.Failed) };
     private void UpdateTaskMetrics()
     {
         var response = Session.LastTaskResponse;
@@ -273,16 +300,30 @@
     {
         var current = Session.CurrentTask?.State;
         if (current is null) return "";
-        if (state == current) return "current";
-        return state < current ? "complete" : "";
+        var visibleCurrent = current switch
+        {
+            TaskState.AwaitingPlanApproval or TaskState.Clarification when Session.CurrentTask?.Clarification?.ResumeState != TaskState.Execution => TaskState.Planning,
+            TaskState.AwaitingContinuation => Session.CurrentTask?.ResumeState == TaskState.Done ? TaskState.Validation : TaskState.Execution,
+            TaskState.AwaitingValidationDecision => TaskState.Validation,
+            TaskState.Cancelled or TaskState.Failed => (TaskState?)null,
+            _ => current
+        };
+        if (state == visibleCurrent) return "current";
+        return visibleCurrent is not null && state < visibleCurrent ? "complete" : "";
     }
 
     private static string TaskStageCaption(TaskState state) => state switch
     {
         TaskState.Planning => "План",
+        TaskState.AwaitingPlanApproval => "Согласование",
         TaskState.Execution => "Выполнение",
+        TaskState.Clarification => "Уточнение",
         TaskState.Validation => "Проверка",
+        TaskState.AwaitingValidationDecision => "Требуется решение",
+        TaskState.AwaitingContinuation => "Пауза",
         TaskState.Done => "Готово",
+        TaskState.Cancelled => "Отменено",
+        TaskState.Failed => "Ошибка",
         _ => ""
     };
 
@@ -291,7 +332,9 @@
         : message.Stage switch
         {
             TaskState.Planning => "Ассистент · Планирование",
+            TaskState.AwaitingPlanApproval => "Ассистент · План",
             TaskState.Execution => "Ассистент · Выполнение",
+            TaskState.Clarification => "Ассистент · Уточнение",
             TaskState.Validation => "Ассистент · Валидация",
             TaskState.Done => "Ассистент · Итог",
             _ => "Ассистент"

@@ -9,6 +9,7 @@ using DesignerAssistant.Models;
 using DesignerAssistant.Prompts;
 using DesignerAssistant.Revit;
 using DesignerAssistant.Storage;
+using DesignerAssistant.Tools;
 
 var startedAt = DateTimeOffset.Now;
 var repetitions = int.TryParse(Environment.GetEnvironmentVariable("SOAK_COUNT"), out var configuredCount) ? configuredCount : 30;
@@ -41,13 +42,15 @@ if (File.Exists(sourceDatabase))
 }
 
 await using var revit = new RevitMcpClient(confirmWriteAsync: _ => Task.FromResult(false));
+var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(root));
+var tools = new CompositeToolProvider(revit, workspace);
 var agent = new DesignAssistantAgent(
     llm,
     new SqliteChatHistoryStore(databasePath),
     new SqliteMemoryStore(databasePath),
     DesignerAssistantPrompt.Text,
     options,
-    revit,
+    tools,
     profileStore,
     invariantStore);
 await agent.InitializeAsync(deadline.Token);

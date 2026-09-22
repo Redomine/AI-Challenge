@@ -18,6 +18,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
     private readonly int _recentMessageCount;
     private readonly List<ChatMessage> _history = [];
     private bool _isInitialized;
+    public TaskPlan? LastStructuredPlan { get; private set; }
 
     public DesignAssistantAgent(
         ILlmClient llmClient,
@@ -77,9 +78,11 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
 
     public async Task<AgentResponse> PlanTaskAsync(
         string query,
-        string? previousExecution = null,
-        CancellationToken cancellationToken = default)
+        string? revisionContext = null,
+        CancellationToken cancellationToken = default,
+        string? storedUserMessage = null)
     {
+        LastStructuredPlan = null;
         var tools = _toolProvider is null
             ? Array.Empty<ToolDefinition>()
             : await _toolProvider.GetToolsAsync(cancellationToken);
@@ -91,13 +94,15 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Используй только инструменты из TOOL_CATALOGUE и называй их точными техническими именами.
             Учитывай обязательные аргументы и типы из JSON-сигнатуры каждого выбранного инструмента.
             Если подходящего инструмента нет, прямо укажи это вместо выдумывания API, методов или скриптов.
+            Если для построения плана не хватает данных пользователя, верни clarification с одним коротким вопросом и пустой steps.
+            Иначе верни clarification=null и непустой steps.
             Верни только JSON без Markdown по схеме:
-            {"summary":"цель плана","steps":[{"action":"что сделать","tool":"точное имя или null","arguments":{"известныйАргумент":"значение"},"argumentSources":{"неизвестныйАргумент":"результат шага 1"}}]}
+            {"summary":"цель плана","clarification":null,"steps":[{"action":"что сделать","tool":"точное имя или null","arguments":{"известныйАргумент":"значение"},"argumentSources":{"неизвестныйАргумент":"результат шага 1"}}]}
             Каждый обязательный аргумент инструмента должен находиться либо в arguments, либо в argumentSources.
             """;
-        var revision = string.IsNullOrWhiteSpace(previousExecution)
+        var revision = string.IsNullOrWhiteSpace(revisionContext)
             ? ""
-            : $"\n\nПредыдущее выполнение потребовало пересмотра плана:\n{previousExecution}";
+            : $"\n\n[PLAN_REVISION_CONTEXT]\n{revisionContext}\n[/PLAN_REVISION_CONTEXT]";
         var planningInput = $"{query}{revision}\n\n[TOOL_CATALOGUE]\n{toolCatalogue}\n[/TOOL_CATALOGUE]";
         InvalidDataException? lastError = null;
         for (var attempt = 0; attempt < 2; attempt++)
@@ -113,12 +118,13 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
                     useTools: false,
                     addUserMessage: true,
                     cancellationToken,
-                    storedUserMessage: query,
+                    storedUserMessage: storedUserMessage ?? query,
                     stage: TaskState.Planning,
                     responseSchema: TaskPlanSchema,
-                    transformResponse: response => response with
+                    transformResponse: response =>
                     {
-                        Content = TaskPlanParser.ParseAndValidate(response.Content, tools).ToDisplayText()
+                        LastStructuredPlan = TaskPlanParser.ParseAndValidate(response.Content, tools);
+                        return response with { Content = LastStructuredPlan.ToDisplayText() };
                     });
             }
             catch (InvalidDataException exception)
@@ -134,13 +140,15 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         var stageInstructions = """
             Ты находишься только на стадии EXECUTION. Выполни согласованный план в его пределах.
             Используй доступные инструменты, когда они необходимы. Не проводи финальную валидацию.
+            Если для продолжения не хватает конкретных данных пользователя, начни ответ с [CLARIFY] и задай один короткий вопрос.
             Если план объективно нельзя выполнить и его необходимо пересмотреть, начни ответ с [REPLAN] и объясни причину.
             Иначе начни ответ с [EXECUTED] и затем сообщи фактический результат выполнения.
             """;
         var validationFeedback = string.IsNullOrWhiteSpace(context.ValidationResult)
             ? ""
             : $"\n\n[VALIDATION_FEEDBACK]\n{context.ValidationResult}\n[/VALIDATION_FEEDBACK]";
-        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN]\n{context.Plan}\n[/APPROVED_PLAN]{validationFeedback}";
+        var plan = context.StructuredPlan is null ? context.Plan : JsonSerializer.Serialize(context.StructuredPlan);
+        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]{validationFeedback}";
         return RunStageAsync(input, stageInstructions, useTools: true, addUserMessage: false, cancellationToken, stage: TaskState.Execution);
     }
 
@@ -150,9 +158,11 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Ты находишься только на стадии VALIDATION. Проверь результат выполнения относительно запроса и согласованного плана.
             Не выполняй задачу заново и не вызывай инструменты.
             Верни status=PASS, если результат достаточен.
-            Верни status=FAIL, если нужны исправления, и перечисли конкретные дефекты в report.
+            Верни status=RETRY_EXECUTION, если исправление полностью находится в пределах согласованного плана.
+            Верни status=REPLAN, если для исправления нужно изменить согласованный план.
             """;
-        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN]\n{context.Plan}\n[/APPROVED_PLAN]\n\n[EXECUTION_RESULT]\n{context.ExecutionResult}\n[/EXECUTION_RESULT]";
+        var plan = context.StructuredPlan is null ? context.Plan : JsonSerializer.Serialize(context.StructuredPlan);
+        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]\n\n[EXECUTION_RESULT]\n{context.ExecutionResult}\n[/EXECUTION_RESULT]";
         var errors = new List<string>();
         try
         {
@@ -174,7 +184,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         var fallbackInstructions = stageInstructions + """
 
             Структурированный режим API не вернул результат. Ответь только одним JSON-объектом без Markdown:
-            {"status":"PASS или FAIL","report":"краткий отчёт"}
+            {"status":"PASS, RETRY_EXECUTION или REPLAN","report":"краткий отчёт"}
             """;
         for (var attempt = 2; attempt <= 4; attempt++)
         {
@@ -419,6 +429,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         properties = new
         {
             summary = new { type = "string" },
+            clarification = new { type = new[] { "string", "null" } },
             steps = new
             {
                 type = "array",
@@ -438,7 +449,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
                 }
             }
         },
-        required = new[] { "summary", "steps" }
+        required = new[] { "summary", "clarification", "steps" }
     });
 
     private static readonly JsonElement ValidationSchema = JsonSerializer.SerializeToElement(new
@@ -447,7 +458,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         additionalProperties = false,
         properties = new
         {
-            status = new { type = "string", @enum = new[] { "PASS", "FAIL" } },
+            status = new { type = "string", @enum = new[] { "PASS", "RETRY_EXECUTION", "REPLAN" } },
             report = new { type = "string" }
         },
         required = new[] { "status", "report" }
@@ -459,7 +470,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         var root = document.RootElement;
         var status = root.GetProperty("status").GetString();
         var report = root.GetProperty("report").GetString() ?? "";
-        if (status is not ("PASS" or "FAIL"))
+        if (status is not ("PASS" or "RETRY_EXECUTION" or "REPLAN"))
             throw new InvalidDataException("Validation вернула неизвестный статус.");
         return $"[{status}] {report}".TrimEnd();
     }

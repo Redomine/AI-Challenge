@@ -4,10 +4,13 @@ namespace DesignerAssistant.Agent;
 
 public interface ITaskStageRunner
 {
+    TaskPlan? LastStructuredPlan => null;
+
     Task<AgentResponse> PlanTaskAsync(
         string query,
-        string? previousExecution = null,
-        CancellationToken cancellationToken = default);
+        string? revisionContext = null,
+        CancellationToken cancellationToken = default,
+        string? storedUserMessage = null);
 
     Task<AgentResponse> ExecuteTaskAsync(
         TaskContext context,

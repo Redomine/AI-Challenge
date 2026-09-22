@@ -34,6 +34,8 @@ public sealed class TaskPlanningTests
         Assert.Contains("только на стадии PLANNING", request.Instructions);
         Assert.DoesNotContain("TOOL_CATALOGUE", agent.GetHistory()[0].Content);
         Assert.Equal("Заполни комментарии выбранных элементов", agent.GetHistory()[0].Content);
+        Assert.NotNull(agent.LastStructuredPlan);
+        Assert.Equal(2, agent.LastStructuredPlan.Steps.Count);
     }
 
     private sealed class CapturingLlm : ILlmClient

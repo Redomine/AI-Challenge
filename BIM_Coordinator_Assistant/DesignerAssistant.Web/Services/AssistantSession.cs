@@ -5,6 +5,7 @@ using DesignerAssistant.Models;
 using DesignerAssistant.Prompts;
 using DesignerAssistant.Revit;
 using DesignerAssistant.Storage;
+using DesignerAssistant.Tools;
 
 namespace DesignerAssistant.Web.Services;
 
@@ -23,6 +24,7 @@ public sealed class AssistantSession : IAsyncDisposable
     public AppOptions? Options { get; private set; }
     public TaskContext? CurrentTask => _workflow?.Context;
     public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
+    public bool AwaitingClarification => _workflow?.AwaitingClarification == true;
     public bool IsTaskPaused => _workflow?.IsPaused == true;
     public bool ValidationFailed => _workflow?.ValidationFailed == true;
     public AgentResponse? LastTaskResponse => _workflow?.LastResponse;
@@ -48,7 +50,9 @@ public sealed class AssistantSession : IAsyncDisposable
         var profiles = new SqliteUserProfileStore(Options.DatabasePath);
         var invariants = new SqliteInvariantStore(Options.DatabasePath);
         _revit = new RevitMcpClient(confirmWriteAsync: ConfirmTransactionAsync);
-        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, _revit, profiles, invariants);
+        var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(contentRoot));
+        var tools = new CompositeToolProvider(_revit, workspace);
+        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
         await _agent.InitializeAsync(cancellationToken);
         _workflow = new TaskWorkflow(_agent);
     }
@@ -69,6 +73,30 @@ public sealed class AssistantSession : IAsyncDisposable
     public async Task ApprovePlanAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ApprovePlanAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RefinePlanAsync(string feedback, CancellationToken cancellationToken = default)
+    {
+        await Workflow.RefinePlanAsync(feedback, cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task SubmitClarificationAsync(string answer, CancellationToken cancellationToken = default)
+    {
+        await Workflow.SubmitClarificationAsync(answer, cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RetryExecutionAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.RetryExecutionAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task ReplanAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.ReplanAsync(cancellationToken);
         Changed?.Invoke();
     }
 

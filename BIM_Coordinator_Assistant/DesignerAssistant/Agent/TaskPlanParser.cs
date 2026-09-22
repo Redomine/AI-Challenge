@@ -12,8 +12,13 @@ public static class TaskPlanParser
             using var document = JsonDocument.Parse(ExtractJson(content));
             var root = document.RootElement;
             var summary = RequiredString(root, "summary");
-            if (!root.TryGetProperty("steps", out var stepsElement) || stepsElement.ValueKind != JsonValueKind.Array || stepsElement.GetArrayLength() == 0)
-                throw new InvalidDataException("Поле steps должно быть непустым массивом.");
+            var clarification = OptionalString(root, "clarification")?.Trim();
+            if (!root.TryGetProperty("steps", out var stepsElement) || stepsElement.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("Поле steps должно быть массивом.");
+            if (stepsElement.GetArrayLength() == 0 && string.IsNullOrWhiteSpace(clarification))
+                throw new InvalidDataException("Поле steps должно быть непустым массивом, если уточнение не требуется.");
+            if (stepsElement.GetArrayLength() > 0 && !string.IsNullOrWhiteSpace(clarification))
+                throw new InvalidDataException("Planning не может одновременно вернуть план и запрос уточнения.");
 
             var toolsByName = tools.ToDictionary(tool => tool.Name, StringComparer.Ordinal);
             var steps = new List<TaskPlanStep>();
@@ -31,7 +36,7 @@ public static class TaskPlanParser
                 }
                 steps.Add(new TaskPlanStep(action, toolName, arguments, sources));
             }
-            return new TaskPlan(summary, steps);
+            return new TaskPlan(summary, steps, clarification);
         }
         catch (JsonException exception)
         {
