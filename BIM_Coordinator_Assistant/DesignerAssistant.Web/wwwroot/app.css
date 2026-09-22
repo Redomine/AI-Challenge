@@ -52,6 +52,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .message.user { margin-left: auto; }
 .message.user span { text-align: right; }
 .message.user p { background: #e8f4ec; border-color: #bed7c7; }
+.message .stage-message { overflow: hidden; background: #fff; border: 1px solid #d9dfdc; border-radius: 7px; }
+.message .stage-message summary { padding: 11px 14px; color: #526159; cursor: pointer; font-size: 12px; font-weight: 700; }
+.message .stage-message[open] summary { border-bottom: 1px solid #e3e8e5; }
+.message .stage-message p { border: 0; border-radius: 0; }
 .thinking { color: #64716b; font-size: 13px; }
 .composer { padding: 14px max(28px, calc((100% - 900px) / 2)) 18px; background: #fff; border-top: 1px solid #d9dfdc; }
 .composer textarea, .editor-form textarea, .editor-form input { width: 100%; resize: vertical; padding: 11px 12px; color: #1d2522; background: #fff; border: 1px solid #bfc9c4; border-radius: 5px; outline: none; }

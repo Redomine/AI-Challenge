@@ -7,7 +7,8 @@ public sealed class TaskStateMachine
     private static readonly IReadOnlyDictionary<TaskState, IReadOnlySet<TaskState>> AllowedTransitions =
         new Dictionary<TaskState, IReadOnlySet<TaskState>>
         {
-            [TaskState.Planning] = Set(TaskState.AwaitingPlanApproval, TaskState.Clarification, TaskState.Failed, TaskState.Cancelled),
+            [TaskState.Planning] = Set(TaskState.PlanningInterrupted, TaskState.AwaitingPlanApproval, TaskState.Clarification, TaskState.Failed, TaskState.Cancelled),
+            [TaskState.PlanningInterrupted] = Set(TaskState.Planning, TaskState.Cancelled),
             [TaskState.AwaitingPlanApproval] = Set(TaskState.Planning, TaskState.Execution, TaskState.Cancelled),
             [TaskState.Execution] = Set(TaskState.ExecutionInterrupted, TaskState.Validation, TaskState.Planning, TaskState.Clarification, TaskState.AwaitingContinuation, TaskState.Failed, TaskState.Cancelled),
             [TaskState.ExecutionInterrupted] = Set(TaskState.Execution, TaskState.Validation, TaskState.Planning, TaskState.Cancelled),

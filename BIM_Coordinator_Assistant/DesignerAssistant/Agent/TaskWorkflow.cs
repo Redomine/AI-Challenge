@@ -17,6 +17,7 @@ public sealed class TaskWorkflow
     public TaskContext? Context { get; private set; }
     public TaskPauseOptions PauseOptions { get; set; } = new();
     public bool AwaitingPlanApproval => Context?.State == TaskState.AwaitingPlanApproval;
+    public bool PlanningInterrupted => Context?.State == TaskState.PlanningInterrupted;
     public bool AwaitingClarification => Context?.State == TaskState.Clarification;
     public bool ExecutionInterrupted => Context?.State == TaskState.ExecutionInterrupted;
     public bool IsPaused => Context?.State == TaskState.AwaitingContinuation;
@@ -49,6 +50,22 @@ public sealed class TaskWorkflow
         var revision = $"Текущий план:\n{Context!.Plan}\n\nУточнение пользователя:\n{trimmed}";
         Context = _machine.Transition(Context with { PlanApproved = false }, TaskState.Planning);
         await BuildPlanAsync(revision, trimmed, cancellationToken);
+    }
+
+    public async Task RetryPlanningAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureState(TaskState.PlanningInterrupted);
+        Context = _machine.Transition(Context! with { FailureReason = null, DiagnosticTraces = null }, TaskState.Planning);
+        await BuildPlanAsync(cancellationToken: cancellationToken);
+    }
+
+    public async Task RefineInterruptedPlanningAsync(string feedback, CancellationToken cancellationToken = default)
+    {
+        EnsureState(TaskState.PlanningInterrupted);
+        if (string.IsNullOrWhiteSpace(feedback)) throw new ArgumentException("Уточнение не должно быть пустым.", nameof(feedback));
+        var trimmed = feedback.Trim();
+        Context = _machine.Transition(Context! with { FailureReason = null, DiagnosticTraces = null }, TaskState.Planning);
+        await BuildPlanAsync($"Уточнение пользователя после сбоя планирования:\n{trimmed}", trimmed, cancellationToken);
     }
 
     public async Task SubmitClarificationAsync(string answer, CancellationToken cancellationToken = default)
@@ -170,13 +187,32 @@ public sealed class TaskWorkflow
     {
         if (Context is null || IsTerminal(Context.State)) return;
         Context = _machine.Transition(Context, TaskState.Cancelled);
-        LastResponse = CreateWorkflowResponse("Задача отменена пользователем.", "task_state_cancelled");
+        LastResponse = CreateWorkflowResponse("Задача отменена", "task_state_cancelled");
     }
 
     private async Task BuildPlanAsync(string? revision = null, string? storedUserMessage = null, CancellationToken cancellationToken = default)
     {
         EnsureState(TaskState.Planning);
-        LastResponse = await _runner.PlanTaskAsync(Context!.Query, revision, cancellationToken, storedUserMessage);
+        try
+        {
+            LastResponse = await _runner.PlanTaskAsync(Context!.Query, revision, cancellationToken, storedUserMessage);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var traces = exception is AgentStageException stageException
+                ? stageException.Traces
+                : Array.Empty<string>();
+            var report = $"Планирование прервано из-за ответа модели. Запрос можно повторить, уточнить или отменить.{Environment.NewLine}{exception.Message}";
+            Context = _machine.Transition(
+                Context! with { FailureReason = exception.Message, DiagnosticTraces = traces },
+                TaskState.PlanningInterrupted);
+            LastResponse = CreateWorkflowResponse(report, "task_state_planning_interrupted", traces);
+            return;
+        }
         if (LastResponse.ModelResponse.Content.TrimStart().StartsWith("[CLARIFY]", StringComparison.OrdinalIgnoreCase))
         {
             var question = LastResponse.ModelResponse.Content.TrimStart()[9..].Trim();

@@ -43,6 +43,17 @@ public sealed class ToolRouter
         var latestUserMessage = messages.LastOrDefault(message =>
             message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
         latestUserMessage = ExtractTaskQuery(latestUserMessage);
+        if (ToolCapabilityCatalog.IsBridgeQuestion(latestUserMessage))
+        {
+            return new ToolRouteDecision(
+                "answer",
+                null,
+                "Вопрос о MCP Bridge обработан по проверенному описанию доступных инструментов.",
+                0,
+                0,
+                0,
+                ToolCapabilityCatalog.BuildBridgeHelp(tools));
+        }
         if (ToolCapabilityCatalog.TryDetectQuestion(latestUserMessage, out var capabilityScope))
         {
             return new ToolRouteDecision(

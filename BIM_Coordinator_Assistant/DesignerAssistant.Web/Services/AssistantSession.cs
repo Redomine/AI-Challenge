@@ -24,6 +24,7 @@ public sealed class AssistantSession : IAsyncDisposable
     public AppOptions? Options { get; private set; }
     public TaskContext? CurrentTask => _workflow?.Context;
     public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
+    public bool PlanningInterrupted => _workflow?.PlanningInterrupted == true;
     public bool AwaitingClarification => _workflow?.AwaitingClarification == true;
     public bool ExecutionInterrupted => _workflow?.ExecutionInterrupted == true;
     public bool IsTaskPaused => _workflow?.IsPaused == true;
@@ -80,6 +81,18 @@ public sealed class AssistantSession : IAsyncDisposable
     public async Task RefinePlanAsync(string feedback, CancellationToken cancellationToken = default)
     {
         await Workflow.RefinePlanAsync(feedback, cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RetryPlanningAsync(CancellationToken cancellationToken = default)
+    {
+        await Workflow.RetryPlanningAsync(cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public async Task RefineInterruptedPlanningAsync(string feedback, CancellationToken cancellationToken = default)
+    {
+        await Workflow.RefineInterruptedPlanningAsync(feedback, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -143,9 +156,10 @@ public sealed class AssistantSession : IAsyncDisposable
         Changed?.Invoke();
     }
 
-    public void CancelTask()
+    public async Task CancelTaskAsync(CancellationToken cancellationToken = default)
     {
         Workflow.Cancel();
+        await Agent.AppendAssistantMessageAsync("Задача отменена", TaskState.Cancelled, cancellationToken);
         Changed?.Invoke();
     }
 

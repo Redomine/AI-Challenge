@@ -283,6 +283,52 @@ public sealed class TaskWorkflowTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.RetryExecutionAsync());
     }
 
+    [Fact]
+    public async Task EmptyPlanningResponseCanBeRetriedWithoutBlockingTheTask()
+    {
+        var runner = new InterruptedPlanningRunner();
+        var workflow = new TaskWorkflow(runner);
+
+        await workflow.StartAsync("Выполни задачу");
+
+        Assert.True(workflow.PlanningInterrupted);
+        Assert.Equal(TaskState.PlanningInterrupted, workflow.Context?.State);
+        Assert.Equal("task_state_planning_interrupted", workflow.LastResponse?.ModelResponse.FinishReason);
+        Assert.Contains("пустой structured-ответ", workflow.Context?.FailureReason);
+
+        await workflow.RetryPlanningAsync();
+
+        Assert.Equal(TaskState.AwaitingPlanApproval, workflow.Context?.State);
+        Assert.Equal(2, runner.PlanningCount);
+    }
+
+    [Fact]
+    public async Task InterruptedPlanningAcceptsUserRefinement()
+    {
+        var runner = new InterruptedPlanningRunner();
+        var workflow = new TaskWorkflow(runner);
+        await workflow.StartAsync("Выполни задачу");
+
+        await workflow.RefineInterruptedPlanningAsync("Используй только выбранные элементы");
+
+        Assert.Equal(TaskState.AwaitingPlanApproval, workflow.Context?.State);
+        Assert.Equal("Используй только выбранные элементы", runner.StoredUserMessage);
+        Assert.Contains("Уточнение пользователя после сбоя", runner.RevisionContext);
+    }
+
+    [Fact]
+    public async Task CancelCreatesUserFacingResponse()
+    {
+        var workflow = new TaskWorkflow(new InterruptedPlanningRunner());
+        await workflow.StartAsync("Выполни задачу");
+
+        workflow.Cancel();
+
+        Assert.Equal(TaskState.Cancelled, workflow.Context?.State);
+        Assert.Equal("Задача отменена", workflow.LastResponse?.ModelResponse.Content);
+        Assert.Equal("task_state_cancelled", workflow.LastResponse?.ModelResponse.FinishReason);
+    }
+
     private sealed class FakeRunner(
         IEnumerable<string> executions,
         IEnumerable<string> validations) : ITaskStageRunner
@@ -320,6 +366,35 @@ public sealed class TaskWorkflowTests
             0,
             true,
             0);
+    }
+
+    private sealed class InterruptedPlanningRunner : ITaskStageRunner
+    {
+        public int PlanningCount { get; private set; }
+        public string? RevisionContext { get; private set; }
+        public string? StoredUserMessage { get; private set; }
+
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null)
+        {
+            PlanningCount++;
+            RevisionContext = revisionContext;
+            StoredUserMessage = storedUserMessage;
+            if (PlanningCount == 1)
+                throw new AgentStageException(
+                    "GigaChat трижды вернул пустой structured-ответ.",
+                    [],
+                    new InvalidOperationException("empty"));
+            return Task.FromResult(Response("1. Проверенный план"));
+        }
+
+        public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Response("[EXECUTED] Готово"));
+
+        public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Response("[PASS] Проверено"));
+
+        private static AgentResponse Response(string content) => new(
+            new LlmResponse(content, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true)), 0, true, 0);
     }
 
     private sealed class LimitFailingRunner : ITaskStageRunner

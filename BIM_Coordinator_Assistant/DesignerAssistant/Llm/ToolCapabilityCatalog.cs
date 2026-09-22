@@ -40,7 +40,7 @@ public static class ToolCapabilityCatalog
             ["revit_get_current_view_info"] = Read("revit_get_current_view_info", "Получить сведения об активном виде", "Читает имя, тип и основные свойства текущего активного вида.", "Активный вид", ToolCapabilityScope.View, "Что сейчас открыто на активном виде?"),
             ["revit_get_selected_elements"] = Read("revit_get_selected_elements", "Прочитать выбранные элементы", "Возвращает элементы, которые пользователь выделил в активном документе Revit.", "Элементы", ToolCapabilityScope.Element, "Какие элементы сейчас выделены?"),
             ["revit_get_element_details"] = Read("revit_get_element_details", "Получить сведения об элементе", "Читает категорию, тип, семейство и другие основные сведения по ElementId.", "Элементы", ToolCapabilityScope.Element, "Что за элемент 5133824?"),
-            ["revit_get_element_parameters"] = Read("revit_get_element_parameters", "Прочитать параметры элемента", "Возвращает параметры экземпляра указанного элемента без изменения модели.", "Параметры", ToolCapabilityScope.Element, "Покажи параметры элемента 5133824"),
+            ["revit_get_element_parameters"] = Read("revit_get_element_parameters", "Прочитать параметры элемента", "Возвращает параметры экземпляра с их точными именами; результат нужно использовать для проверки и коррекции parameterName перед операциями с параметрами.", "Параметры", ToolCapabilityScope.Element, "Покажи параметры элемента 5133824"),
             ["revit_get_type_parameters"] = Read("revit_get_type_parameters", "Прочитать параметры типа", "Возвращает параметры типа или семейства для указанного элемента.", "Параметры", ToolCapabilityScope.Element, "Какие параметры типа у элемента 5133824?"),
             ["revit_list_worksets"] = Read("revit_list_worksets", "Показать рабочие наборы", "Перечисляет рабочие наборы открытой модели и их состояние.", "Модель", ToolCapabilityScope.General, "Перечисли рабочие наборы модели"),
             ["revit_analyze_model_statistics"] = Read("revit_analyze_model_statistics", "Проанализировать статистику модели", "Собирает сводную статистику по категориям и элементам открытой модели.", "Модель", ToolCapabilityScope.General, "Покажи статистику модели"),
@@ -48,9 +48,9 @@ public static class ToolCapabilityCatalog
             ["revit_custom_summarize_elements"] = Read("revit_custom_summarize_elements", "Показать состав вида", "Считает элементы активного или указанного вида и возвращает компактную сводку по категориям.", "Активный вид", ToolCapabilityScope.View, "Какие элементы есть на активном виде?"),
             ["revit_custom_list_elements"] = Read("revit_custom_list_elements", "Показать элементы категории на виде", "Возвращает небольшую постраничную выборку элементов одной категории из сводки вида.", "Элементы", ToolCapabilityScope.Element, "Покажи первую страницу воздуховодов на активном виде"),
             ["revit_select_elements"] = Ui("revit_select_elements", "Выделить элементы", "Заменяет текущее выделение в интерфейсе Revit указанными ElementId и при необходимости приближает их; модель не изменяет.", "Интерфейс Revit", ToolCapabilityScope.Element, "Выдели элементы 12345 и 67890"),
-            ["revit_custom_open_model"] = Write("revit_custom_open_model", "Открыть модель", "Ставит в очередь открытие RVT через pyRevit; поддерживает отсоединение с сохранением рабочих наборов и выбор рабочих наборов при открытии, не закрывая другие документы.", "Документы Revit", ToolCapabilityScope.General, "Открой C:\\Models\\Project.rvt с отсоединением и закрой все рабочие наборы"),
-            ["revit_custom_open_family"] = Write("revit_custom_open_family", "Открыть семейство", "Ставит в очередь открытие RFA через pyRevit и не закрывает другие документы.", "Документы Revit", ToolCapabilityScope.General, "Открой семейство C:\\Families\\Valve.rfa"),
-            ["revit_custom_get_bridge_operation"] = Read("revit_custom_get_bridge_operation", "Проверить открытие документа", "Возвращает фактическое состояние и результат операции открытия pyRevit по runId.", "Документы Revit", ToolCapabilityScope.General, "Проверь результат операции открытия"),
+            ["revit_custom_open_model"] = Write("revit_custom_open_model", "Открыть модель через MCP Bridge", "Передаёт проверенное задание pyRevit-команде MCP Bridge и открывает RVT; поддерживает отсоединение, настройку рабочих наборов и последующую локальную выгрузку связей.", "MCP Bridge", ToolCapabilityScope.General, "Открой C:\\Models\\Project.rvt с отсоединением и закрой все рабочие наборы"),
+            ["revit_custom_open_family"] = Write("revit_custom_open_family", "Открыть семейство через MCP Bridge", "Передаёт проверенное задание pyRevit-команде MCP Bridge для открытия RFA, не закрывая другие документы.", "MCP Bridge", ToolCapabilityScope.General, "Открой семейство C:\\Families\\Valve.rfa"),
+            ["revit_custom_get_bridge_operation"] = Read("revit_custom_get_bridge_operation", "Проверить операцию MCP Bridge", "По runId возвращает фактическое состояние, результат и обработанные диалоги операции pyRevit.", "MCP Bridge", ToolCapabilityScope.General, "Проверь результат операции открытия"),
             ["revit_custom_unload_links_locally"] = Write("revit_custom_unload_links_locally", "Выгрузить связи локально", "Выгружает все загруженные связи Revit только для текущего пользователя в активной локальной модели.", "Связи Revit", ToolCapabilityScope.General, "Выгрузи для меня все связи Revit"),
 
             ["revit_get_available_family_types"] = Read("revit_get_available_family_types", "Показать доступные типы семейств", "Перечисляет загруженные типы семейств, которые можно использовать при создании элементов.", "Семейства", ToolCapabilityScope.General, "Покажи доступные типы дверей"),
@@ -159,8 +159,25 @@ public static class ToolCapabilityCatalog
             }
         }
         builder.AppendLine().AppendLine()
+            .Append(BuildBridgeHelp(tools)).AppendLine().AppendLine()
             .Append("Перечень сформирован по текущему каталогу инструментов. Операции без изменения модели выполняются сразу; изменяющие модель Revit — только по явной команде и после подтверждения.");
         return builder.ToString();
+    }
+
+    public static bool IsBridgeQuestion(string message) =>
+        !string.IsNullOrWhiteSpace(message) &&
+        Regex.IsMatch(message, @"\b(mcp\s*bridge|pyrevit|пиревит)\b", RegexOptions.IgnoreCase) &&
+        Regex.IsMatch(message, @"\b(что|какие|как|дай|дать|нужн\w*|требу\w*|запуст\w*|выполн\w*|скрипт\w*|команд\w*)\b", RegexOptions.IgnoreCase);
+
+    public static string BuildBridgeHelp(IReadOnlyCollection<ToolDefinition> tools)
+    {
+        var available = tools.Select(tool => tool.Name).Where(name => name.StartsWith("revit_custom_", StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
+        var supported = new List<string>();
+        if (available.Contains("revit_custom_open_model")) supported.Add("открытие RVT с настройками отсоединения и рабочих наборов");
+        if (available.Contains("revit_custom_open_family")) supported.Add("открытие RFA");
+        if (available.Contains("revit_custom_unload_links_locally")) supported.Add("локальная выгрузка Revit-связей");
+        var supportedText = supported.Count == 0 ? "готовые операции сейчас не обнаружены" : string.Join(", ", supported);
+        return $"MCP Bridge связывает MCP-инструмент с отдельной pyRevit-командой-адаптером. Сейчас поддерживаются: {supportedText}. Для новой pyRevit-команды передайте путь к папке .pushbutton, что должно быть выделено или какой вид должен быть открыт, входные значения, ожидаемый результат и возможные диалоги. Универсальный запуск произвольного script.py без адаптера не заявлен: агент сначала должен проверить существующий инструмент либо подготовить отдельный безопасный адаптер.";
     }
 
     public static string BuildCompactRouterCatalogue(IReadOnlyCollection<ToolDefinition> tools) =>

@@ -3,6 +3,7 @@ namespace DesignerAssistant.Models;
 public enum TaskState
 {
     Planning,
+    PlanningInterrupted,
     AwaitingPlanApproval,
     Execution,
     ExecutionInterrupted,

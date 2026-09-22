@@ -9,6 +9,8 @@ public sealed class TaskStateMachineTests
 
     [Theory]
     [InlineData(TaskState.Planning, TaskState.AwaitingPlanApproval)]
+    [InlineData(TaskState.Planning, TaskState.PlanningInterrupted)]
+    [InlineData(TaskState.PlanningInterrupted, TaskState.Planning)]
     [InlineData(TaskState.AwaitingPlanApproval, TaskState.Planning)]
     [InlineData(TaskState.AwaitingPlanApproval, TaskState.Execution)]
     [InlineData(TaskState.Execution, TaskState.Clarification)]

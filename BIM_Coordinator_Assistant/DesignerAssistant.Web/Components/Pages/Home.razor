@@ -57,13 +57,35 @@
                 @foreach (var message in Session.History)
                 {
                     <article class="message @message.Role">
-                        <span>@MessageLabel(message)</span>
-                        <p>@message.Content</p>
+                        @if (IsCollapsibleStageMessage(message))
+                        {
+                            <details class="stage-message" open="@ShouldExpandStageMessage(message)">
+                                <summary>@MessageLabel(message)</summary>
+                                <p>@message.Content</p>
+                            </details>
+                        }
+                        else
+                        {
+                            <span>@MessageLabel(message)</span>
+                            <p>@message.Content</p>
+                        }
                     </article>
                 }
                 @if (_busy) { <div class="thinking">Ассистент анализирует запрос...</div> }
             </section>
             <footer class="composer">
+                @if (Session.PlanningInterrupted && Session.CurrentTask is not null)
+                {
+                    <section class="validation-recovery" role="alert">
+                        <strong>Планирование прервано</strong>
+                        <details open><summary>Причина</summary><pre>@Session.CurrentTask.FailureReason</pre></details>
+                        <div>
+                            <button class="secondary" @onclick="RetryPlanningAsync" disabled="@_busy">Повторить</button>
+                            <button class="secondary" @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_message))">Отправить уточнение</button>
+                            <button class="danger" @onclick="CancelTask" disabled="@_busy">Отменить</button>
+                        </div>
+                    </section>
+                }
                 @if (Session.ValidationFailed && Session.CurrentTask is not null)
                 {
                     <section class="validation-recovery" role="alert">
@@ -250,6 +272,8 @@
         {
             if (Session.AwaitingPlanApproval)
                 await Session.RefinePlanAsync(text);
+            else if (Session.PlanningInterrupted)
+                await Session.RefineInterruptedPlanningAsync(text);
             else if (Session.AwaitingClarification)
                 await Session.SubmitClarificationAsync(text);
             else if (Session.ExecutionInterrupted)
@@ -266,6 +290,14 @@
     {
         _busy = true; _notice = null;
         try { await Session.ApprovePlanAsync(); UpdateTaskMetrics(); }
+        catch (Exception e) { _notice = e.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task RetryPlanningAsync()
+    {
+        _busy = true; _notice = null;
+        try { await Session.RetryPlanningAsync(); UpdateTaskMetrics(); }
         catch (Exception e) { _notice = e.Message; }
         finally { _busy = false; }
     }
@@ -333,7 +365,11 @@
         _notice = "Задача завершена без успешной валидации по решению пользователя.";
     }
 
-    private void CancelTask() { Session.CancelTask(); _notice = "Задача отменена."; }
+    private async Task CancelTask()
+    {
+        await Session.CancelTaskAsync();
+        UpdateTaskMetrics();
+    }
     private bool TaskIsActive => Session.CurrentTask is { State: not (TaskState.Done or TaskState.Cancelled or TaskState.Failed) };
     private void UpdateTaskMetrics()
     {
@@ -352,6 +388,7 @@
         var visibleCurrent = current switch
         {
             TaskState.AwaitingPlanApproval or TaskState.Clarification when Session.CurrentTask?.Clarification?.ResumeState != TaskState.Execution => TaskState.Planning,
+            TaskState.PlanningInterrupted => TaskState.Planning,
             TaskState.AwaitingContinuation => Session.CurrentTask?.ResumeState == TaskState.Done ? TaskState.Validation : TaskState.Execution,
             TaskState.ExecutionInterrupted => TaskState.Execution,
             TaskState.AwaitingValidationDecision => TaskState.Validation,
@@ -365,6 +402,7 @@
     private static string TaskStageCaption(TaskState state) => state switch
     {
         TaskState.Planning => "План",
+        TaskState.PlanningInterrupted => "Планирование прервано",
         TaskState.AwaitingPlanApproval => "Согласование",
         TaskState.Execution => "Выполнение",
         TaskState.Clarification => "Уточнение",
@@ -390,6 +428,12 @@
             TaskState.Done => "Ассистент · Итог",
             _ => "Ассистент"
         };
+
+    private static bool IsCollapsibleStageMessage(ChatMessage message) =>
+        message.Role == "assistant" && message.Stage is TaskState.Planning or TaskState.Execution;
+
+    private bool ShouldExpandStageMessage(ChatMessage message) =>
+        message.Stage == TaskState.Planning && Session.AwaitingPlanApproval && message == Session.History.LastOrDefault();
 
     private async Task ClearHistoryAsync() { await Session.ClearHistoryAsync(); _notice = "Диалог очищен."; }
     private async Task CompleteTaskAsync() { await Session.CompleteTaskAsync(); _memory = await Session.GetMemoryAsync(); _notice = "Рабочая память очищена."; }

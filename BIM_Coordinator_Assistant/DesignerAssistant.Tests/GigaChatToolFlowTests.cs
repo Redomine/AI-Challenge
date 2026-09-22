@@ -10,6 +10,23 @@ namespace DesignerAssistant.Tests;
 public sealed class GigaChatToolFlowTests
 {
     [Fact]
+    public async Task StructuredResponseRetriesTwoEmptyAnswers()
+    {
+        var handler = new EmptyStructuredHandler();
+        using var http = new HttpClient(handler);
+        var client = new GigaChatClient(http, new AppOptions(
+            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
+
+        var response = await client.GenerateStructuredAsync(
+            "instructions",
+            [new ChatMessage("user", "Составь план")],
+            JsonSerializer.SerializeToElement(new { type = "object" }));
+
+        Assert.Equal("{\"summary\":\"План\"}", response.Content);
+        Assert.Equal(3, handler.ChatRequestCount);
+    }
+
+    [Fact]
     public async Task ToolResultIsReturnedAsGroundedReport()
     {
         var handler = new ToolFlowHandler();
@@ -149,6 +166,31 @@ public sealed class GigaChatToolFlowTests
                 ? "{\"total_count\":2,\"elements\":[{\"elementId\":101},{\"elementId\":102}]}"
                 : "{\"updatedCount\":2,\"failedCount\":0}");
         }
+    }
+
+    private sealed class EmptyStructuredHandler : HttpMessageHandler
+    {
+        public int ChatRequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.Host.Contains("ngw.devices", StringComparison.Ordinal))
+                return Task.FromResult(Json(new { access_token = "token", expires_at = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds() }));
+            if (request.RequestUri.AbsolutePath.Contains("tokens/count", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+            ChatRequestCount++;
+            return Task.FromResult(Json(new
+            {
+                choices = new[] { new { message = new { content = ChatRequestCount < 3 ? "" : "{\"summary\":\"План\"}" }, finish_reason = "stop" } },
+                usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
+            }));
+        }
+
+        private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json")
+        };
     }
 
     private sealed class SelectionWriteFlowHandler : HttpMessageHandler

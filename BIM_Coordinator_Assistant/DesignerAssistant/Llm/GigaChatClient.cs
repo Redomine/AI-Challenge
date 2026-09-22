@@ -38,8 +38,25 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         string instructions,
         IReadOnlyCollection<ChatMessage> messages,
         JsonElement schema,
-        CancellationToken cancellationToken = default) =>
-        await GenerateAsync(instructions, messages, schema, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        InvalidOperationException? lastEmptyResponse = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                return await GenerateAsync(instructions, messages, schema, cancellationToken);
+            }
+            catch (InvalidOperationException exception) when (
+                exception.Message.StartsWith("В ответе GigaChat не найден текст модели.", StringComparison.Ordinal))
+            {
+                lastEmptyResponse = exception;
+            }
+        }
+        throw new InvalidOperationException(
+            $"GigaChat трижды вернул пустой structured-ответ. {lastEmptyResponse?.Message}",
+            lastEmptyResponse);
+    }
 
     private async Task<LlmResponse> GenerateAsync(
         string instructions,

@@ -241,6 +241,44 @@ public sealed class ToolRouterTests
         Assert.Contains(expectedHeading, decision.DirectResponse);
     }
 
+    [Theory]
+    [InlineData("Что тебе дать для выполнения pyRevit скрипта?")]
+    [InlineData("Как работает MCP Bridge?")]
+    public async Task BridgeQuestionsExplainInputsAndAdapterBoundaryWithoutCallingModel(string question)
+    {
+        var handler = new FakeHandler(AnswerResponse());
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", question)],
+            [
+                Tool("revit_custom_open_model"),
+                Tool("revit_custom_open_family"),
+                Tool("revit_custom_get_bridge_operation"),
+                Tool("revit_custom_unload_links_locally")
+            ]);
+
+        Assert.Equal("answer", decision.Action);
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Contains("путь к папке .pushbutton", decision.DirectResponse);
+        Assert.Contains("что должно быть выделено", decision.DirectResponse);
+        Assert.Contains("какой вид должен быть открыт", decision.DirectResponse);
+        Assert.Contains("Универсальный запуск", decision.DirectResponse);
+    }
+
+    [Fact]
+    public void GeneralToolSummaryContainsMcpBridgeUsageDescription()
+    {
+        var summary = ToolCapabilityCatalog.BuildUserSummary(
+            [Tool("revit_custom_open_model"), Tool("revit_custom_get_bridge_operation")],
+            ToolCapabilityScope.General);
+
+        Assert.Contains("MCP Bridge:", summary);
+        Assert.Contains("pyRevit-командой-адаптером", summary);
+        Assert.Contains("путь к папке .pushbutton", summary);
+    }
+
     [Fact]
     public async Task AmbiguousWriteRequestReturnsClarification()
     {
