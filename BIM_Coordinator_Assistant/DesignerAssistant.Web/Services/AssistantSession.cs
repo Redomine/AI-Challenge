@@ -16,6 +16,7 @@ public sealed class AssistantSession : IAsyncDisposable
     private TaskWorkflow? _workflow;
     private RevitMcpClient? _revit;
     private TaskCompletionSource<bool>? _confirmation;
+    private bool _allowInteractiveConfirmation = true;
 
     public AssistantSession(IHttpClientFactory httpClientFactory) => _httpClientFactory = httpClientFactory;
 
@@ -33,9 +34,13 @@ public sealed class AssistantSession : IAsyncDisposable
 
     public IReadOnlyList<ChatMessage> History => _agent?.GetHistory() ?? [];
 
-    public async Task InitializeAsync(string contentRoot, CancellationToken cancellationToken = default)
+    public async Task InitializeAsync(
+        string contentRoot,
+        bool allowInteractiveConfirmation = true,
+        CancellationToken cancellationToken = default)
     {
         if (_agent is not null) return;
+        _allowInteractiveConfirmation = allowInteractiveConfirmation;
         var databasePath = Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DB_PATH");
         if (string.IsNullOrWhiteSpace(databasePath))
         {
@@ -239,6 +244,7 @@ public sealed class AssistantSession : IAsyncDisposable
 
     private async Task<bool> ConfirmTransactionAsync(string proposal)
     {
+        if (!_allowInteractiveConfirmation) return false;
         _confirmation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         PendingTransaction = proposal;
         Changed?.Invoke();

@@ -1,6 +1,7 @@
 @page "/"
 @implements IDisposable
 @inject AssistantSession Session
+@inject ScheduledTaskService Scheduler
 @inject IWebHostEnvironment Environment
 
 <PageTitle>BIM Assistant</PageTitle>
@@ -18,6 +19,7 @@
             <button class="@NavClass("prompt")" @onclick='@(() => OpenSection("prompt"))'>Базовый prompt</button>
             <button class="@NavClass("invariants")" @onclick="OpenInvariantsAsync">Инварианты</button>
             <button class="@NavClass("memory")" @onclick="OpenMemoryAsync">Память</button>
+            <button class="@NavClass("scheduled")" @onclick="OpenScheduledAsync">Периодические задачи</button>
             <button class="@NavClass("revit")" @onclick="OpenRevitAsync">Revit</button>
         </nav>
 
@@ -208,6 +210,78 @@
                 <div><h2>Долговременная</h2>@foreach (var entry in _memory?.LongTerm ?? []) { <article><strong>@entry.Key</strong><p>@entry.Value</p></article> }</div>
             </section>
         }
+        else if (_section == "scheduled")
+        {
+            <header class="workspace-header">
+                <div><h1>Периодические задачи</h1><p>Агент запускает активные задачи, пока работает BIM Assistant</p></div>
+                <button class="primary" @onclick="NewScheduledTask">Добавить задачу</button>
+            </header>
+            <section class="schedule-layout">
+                <div class="schedule-list">
+                    @if (_scheduledTasks.Count == 0)
+                    {
+                        <div class="schedule-empty"><h2>Расписание пусто</h2><p>Создайте первую задачу для автоматического запуска.</p></div>
+                    }
+                    @foreach (var task in _scheduledTasks)
+                    {
+                        <article class="schedule-item @(task.Id == _scheduledDraft.Id ? "selected" : "")">
+                            <button class="schedule-summary" @onclick="() => EditScheduledTask(task)">
+                                <span class="schedule-state @(task.IsEnabled ? "enabled" : "")"></span>
+                                <span><strong>@task.Name</strong><small>@ScheduleDescription(task)</small></span>
+                            </button>
+                            <div class="schedule-meta">
+                                <span>@(task.IsRunning ? "Выполняется" : task.IsEnabled ? $"Следующий запуск: {task.NextRunAt.LocalDateTime:g}" : "Отключена")</span>
+                                @if (task.LastRunAt is not null) { <span>Последний: @task.LastRunAt.Value.LocalDateTime:g</span> }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(task.LastResult))
+                            {
+                                <details><summary>Результат последнего запуска</summary><p>@task.LastResult</p></details>
+                            }
+                            <div class="schedule-actions">
+                                <button class="secondary" title="Запустить сейчас" disabled="@task.IsRunning" @onclick="() => RunScheduledTaskAsync(task.Id)">Запустить</button>
+                                <button class="secondary" @onclick="() => ToggleScheduledTaskAsync(task)">@(task.IsEnabled ? "Отключить" : "Включить")</button>
+                            </div>
+                        </article>
+                    }
+                </div>
+                <EditForm Model="_scheduledDraft" OnValidSubmit="SaveScheduledTaskAsync" class="schedule-editor">
+                    <h2>@(_scheduledIsNew ? "Новая задача" : "Настройка задачи")</h2>
+                    <label>Название<input @bind="_scheduledDraft.Name" placeholder="Например: Ежедневная проверка модели" /></label>
+                    <label>Задача для агента<textarea @bind="_scheduledDraft.Prompt" rows="7" placeholder="Опишите, что агент должен выполнить"></textarea></label>
+                    <div class="schedule-fields">
+                        <label>Период
+                            <select @bind="_scheduledDraft.Period">
+                                <option value="@SchedulePeriod.Daily">Каждый день</option>
+                                <option value="@SchedulePeriod.Weekly">Каждую неделю</option>
+                                <option value="@SchedulePeriod.Monthly">Каждый месяц</option>
+                            </select>
+                        </label>
+                        <label>Время<input type="time" value="@_scheduledDraft.TimeText" @onchange="OnScheduleTimeChanged" /></label>
+                        @if (_scheduledDraft.Period == SchedulePeriod.Weekly)
+                        {
+                            <label>День недели
+                                <select @bind="_scheduledDraft.DayOfWeek">
+                                    <option value="@DayOfWeek.Monday">Понедельник</option><option value="@DayOfWeek.Tuesday">Вторник</option>
+                                    <option value="@DayOfWeek.Wednesday">Среда</option><option value="@DayOfWeek.Thursday">Четверг</option>
+                                    <option value="@DayOfWeek.Friday">Пятница</option><option value="@DayOfWeek.Saturday">Суббота</option>
+                                    <option value="@DayOfWeek.Sunday">Воскресенье</option>
+                                </select>
+                            </label>
+                        }
+                        @if (_scheduledDraft.Period == SchedulePeriod.Monthly)
+                        {
+                            <label>День месяца<input type="number" min="1" max="31" @bind="_scheduledDraft.DayOfMonth" /></label>
+                        }
+                    </div>
+                    <label class="toggle-row"><input type="checkbox" @bind="_scheduledDraft.IsEnabled" /> Задача активна</label>
+                    <p class="schedule-warning">Фоновые задачи не подтверждают изменения Revit. Для них доступны безопасные операции без интерактивного согласования.</p>
+                    <div class="form-actions">
+                        @if (!_scheduledIsNew) { <button type="button" class="danger" @onclick="DeleteScheduledTaskAsync">Удалить</button> }
+                        <button type="submit" class="primary">Сохранить</button>
+                    </div>
+                </EditForm>
+            </section>
+        }
         else
         {
             <header class="workspace-header"><div><h1>Сеансы Revit</h1><p>Выберите документ для MCP-инструментов</p></div><button class="secondary" @onclick="OpenRevitAsync">Обновить</button></header>
@@ -247,12 +321,16 @@
     private IReadOnlyList<UserProfile> _profiles = [];
     private MemorySnapshot? _memory;
     private IReadOnlyList<RevitSession> _revitSessions = [];
+    private IReadOnlyList<ScheduledAgentTask> _scheduledTasks = [];
+    private ScheduledTaskDraft _scheduledDraft = new();
+    private bool _scheduledIsNew = true;
     private IReadOnlyList<string> _lastToolTraces = [];
     private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
     protected override async Task OnInitializedAsync()
     {
         Session.Changed += OnSessionChanged;
+        Scheduler.Changed += OnSchedulerChanged;
         try { await Session.InitializeAsync(Environment.ContentRootPath); _activeProfile = await Session.GetProfileAsync(); _ready = true; }
         catch (Exception exception) { _error = exception.Message; }
     }
@@ -262,6 +340,7 @@
     private async Task OpenProfilesAsync() { OpenSection("profiles"); await ReloadProfilesAsync(); }
     private async Task OpenInvariantsAsync() { OpenSection("invariants"); _invariants = await Session.GetInvariantsAsync(); }
     private async Task OpenMemoryAsync() { OpenSection("memory"); _memory = await Session.GetMemoryAsync(); }
+    private async Task OpenScheduledAsync() { OpenSection("scheduled"); await ReloadScheduledTasksAsync(); }
     private async Task OpenRevitAsync() { OpenSection("revit"); try { _revitSessions = await Session.GetRevitSessionsAsync(); } catch (Exception e) { await ReportErrorAsync(e); } }
 
     private async Task SendAsync()
@@ -472,7 +551,28 @@
     private async Task SelectRevitAsync(RevitSession session) { _notice = await Session.SelectRevitSessionAsync(session.ProcessId.ToString()); }
     private void ResolveTransaction(bool approved) => Session.ResolveTransaction(approved);
     private void OnSessionChanged() => _ = InvokeAsync(StateHasChanged);
-    public void Dispose() => Session.Changed -= OnSessionChanged;
+    private void NewScheduledTask() { _scheduledIsNew = true; _scheduledDraft = new(); }
+    private void EditScheduledTask(ScheduledAgentTask task) { _scheduledIsNew = false; _scheduledDraft = ScheduledTaskDraft.From(task); }
+    private async Task SaveScheduledTaskAsync()
+    {
+        try { await Scheduler.SaveAsync(_scheduledDraft.ToTask()); await ReloadScheduledTasksAsync(); _notice = "Расписание сохранено."; }
+        catch (Exception exception) { _notice = exception.Message; }
+    }
+    private async Task DeleteScheduledTaskAsync() { await Scheduler.DeleteAsync(_scheduledDraft.Id); NewScheduledTask(); await ReloadScheduledTasksAsync(); _notice = "Задача удалена."; }
+    private async Task ToggleScheduledTaskAsync(ScheduledAgentTask task) { await Scheduler.SaveAsync(task with { IsEnabled = !task.IsEnabled }); await ReloadScheduledTasksAsync(); }
+    private async Task RunScheduledTaskAsync(Guid id) { _notice = "Задача запущена."; _ = Scheduler.RunNowAsync(id); await Task.Delay(50); await ReloadScheduledTasksAsync(); }
+    private async Task ReloadScheduledTasksAsync() => _scheduledTasks = await Scheduler.GetTasksAsync();
+    private void OnScheduleTimeChanged(ChangeEventArgs args) => _scheduledDraft.TimeText = args.Value?.ToString() ?? "09:00";
+    private static string ScheduleDescription(ScheduledAgentTask task) => task.Period switch
+    {
+        SchedulePeriod.Daily => $"Каждый день в {task.Time:HH\\:mm}",
+        SchedulePeriod.Weekly => $"{WeekdayName(task.DayOfWeek ?? DayOfWeek.Monday)}, {task.Time:HH\\:mm}",
+        SchedulePeriod.Monthly => $"{task.DayOfMonth ?? 1}-го числа в {task.Time:HH\\:mm}",
+        _ => ""
+    };
+    private static string WeekdayName(DayOfWeek day) => day switch { DayOfWeek.Monday => "Каждый понедельник", DayOfWeek.Tuesday => "Каждый вторник", DayOfWeek.Wednesday => "Каждую среду", DayOfWeek.Thursday => "Каждый четверг", DayOfWeek.Friday => "Каждую пятницу", DayOfWeek.Saturday => "Каждую субботу", _ => "Каждое воскресенье" };
+    private async void OnSchedulerChanged() { if (_section == "scheduled") { await InvokeAsync(async () => { await ReloadScheduledTasksAsync(); StateHasChanged(); }); } }
+    public void Dispose() { Session.Changed -= OnSessionChanged; Scheduler.Changed -= OnSchedulerChanged; }
 
     private sealed class UserProfileDraft
     {
@@ -482,5 +582,23 @@
         public string Context { get; set; } = "";
         public UserProfile ToProfile() => new(Name.Trim(), Style.Trim(), ConstraintsAndTooling.Trim(), Context.Trim());
         public static UserProfileDraft From(UserProfile profile) => new() { Name = profile.Name, Style = profile.Style, ConstraintsAndTooling = profile.ConstraintsAndTooling, Context = profile.Context };
+    }
+
+    private sealed class ScheduledTaskDraft
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public string Name { get; set; } = "";
+        public string Prompt { get; set; } = "";
+        public SchedulePeriod Period { get; set; } = SchedulePeriod.Daily;
+        public string TimeText { get; set; } = "09:00";
+        public DayOfWeek DayOfWeek { get; set; } = DayOfWeek.Monday;
+        public int DayOfMonth { get; set; } = 1;
+        public bool IsEnabled { get; set; } = true;
+        public ScheduledAgentTask ToTask()
+        {
+            if (!TimeOnly.TryParse(TimeText, out var time)) throw new InvalidOperationException("Укажите корректное время запуска.");
+            return new(Id, Name, Prompt, Period, time, DayOfWeek, DayOfMonth, IsEnabled, DateTimeOffset.Now);
+        }
+        public static ScheduledTaskDraft From(ScheduledAgentTask task) => new() { Id = task.Id, Name = task.Name, Prompt = task.Prompt, Period = task.Period, TimeText = task.Time.ToString("HH:mm"), DayOfWeek = task.DayOfWeek ?? DayOfWeek.Monday, DayOfMonth = task.DayOfMonth ?? 1, IsEnabled = task.IsEnabled };
     }
 }
