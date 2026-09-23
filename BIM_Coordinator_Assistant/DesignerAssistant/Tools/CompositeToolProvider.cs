@@ -3,7 +3,7 @@ using DesignerAssistant.Models;
 
 namespace DesignerAssistant.Tools;
 
-public sealed class CompositeToolProvider(params IToolProvider[] providers) : IToolProvider, IToolConfirmationProvider
+public sealed class CompositeToolProvider(params IToolProvider[] providers) : IToolProvider, IToolConfirmationProvider, IToolOperationCoordinator
 {
     private readonly IToolProvider[] _providers = providers ?? throw new ArgumentNullException(nameof(providers));
     private IReadOnlyDictionary<string, IToolProvider> _owners = new Dictionary<string, IToolProvider>();
@@ -34,4 +34,9 @@ public sealed class CompositeToolProvider(params IToolProvider[] providers) : IT
         _owners.TryGetValue(name, out var provider) && provider is IToolConfirmationProvider confirming
             ? confirming.ConfirmAsync(name, arguments, cancellationToken)
             : Task.FromResult(false);
+
+    public Task<string> WaitForCompletionAsync(string name, string initialResult, CancellationToken cancellationToken = default) =>
+        _owners.TryGetValue(name, out var provider) && provider is IToolOperationCoordinator coordinator
+            ? coordinator.WaitForCompletionAsync(name, initialResult, cancellationToken)
+            : Task.FromResult(initialResult);
 }

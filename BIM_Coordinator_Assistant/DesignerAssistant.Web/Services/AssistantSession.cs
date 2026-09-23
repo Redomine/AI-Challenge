@@ -31,16 +31,31 @@ public sealed class AssistantSession : IAsyncDisposable
     public bool IsTaskPaused => _workflow?.IsPaused == true;
     public bool ValidationFailed => _workflow?.ValidationFailed == true;
     public AgentResponse? LastTaskResponse => _workflow?.LastResponse;
+    public bool AutoApproveRevitChanges { get; set; }
+    public int OperationTimeoutMinutes
+    {
+        get => _operationTimeoutMinutes;
+        set
+        {
+            _operationTimeoutMinutes = Math.Clamp(value, 1, 120);
+            if (_revit is not null) _revit.OperationTimeout = TimeSpan.FromMinutes(_operationTimeoutMinutes);
+        }
+    }
+    private int _operationTimeoutMinutes = 10;
 
     public IReadOnlyList<ChatMessage> History => _agent?.GetHistory() ?? [];
 
     public async Task InitializeAsync(
         string contentRoot,
         bool allowInteractiveConfirmation = true,
+        bool autoApproveRevitChanges = false,
+        int operationTimeoutMinutes = 10,
         CancellationToken cancellationToken = default)
     {
         if (_agent is not null) return;
         _allowInteractiveConfirmation = allowInteractiveConfirmation;
+        AutoApproveRevitChanges = autoApproveRevitChanges;
+        OperationTimeoutMinutes = operationTimeoutMinutes;
         var databasePath = Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DB_PATH");
         if (string.IsNullOrWhiteSpace(databasePath))
         {
@@ -57,6 +72,7 @@ public sealed class AssistantSession : IAsyncDisposable
         var profiles = new SqliteUserProfileStore(Options.DatabasePath);
         var invariants = new SqliteInvariantStore(Options.DatabasePath);
         _revit = new RevitMcpClient(confirmWriteAsync: ConfirmTransactionAsync);
+        _revit.OperationTimeout = TimeSpan.FromMinutes(OperationTimeoutMinutes);
         var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(contentRoot));
         var tools = new CompositeToolProvider(_revit, workspace);
         _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
@@ -72,6 +88,7 @@ public sealed class AssistantSession : IAsyncDisposable
         TaskPauseOptions pauseOptions,
         CancellationToken cancellationToken = default)
     {
+        await Revit.ConfigureOperationTimeoutAsync(TimeSpan.FromMinutes(OperationTimeoutMinutes));
         Workflow.PauseOptions = pauseOptions;
         await Workflow.StartAsync(message, cancellationToken);
         Changed?.Invoke();
@@ -82,6 +99,7 @@ public sealed class AssistantSession : IAsyncDisposable
         TaskPauseOptions pauseOptions,
         CancellationToken cancellationToken = default)
     {
+        await Revit.ConfigureOperationTimeoutAsync(TimeSpan.FromMinutes(OperationTimeoutMinutes));
         Workflow.PauseOptions = pauseOptions;
         await Workflow.StartDirectAsync(message, cancellationToken);
         Changed?.Invoke();
@@ -244,6 +262,7 @@ public sealed class AssistantSession : IAsyncDisposable
 
     private async Task<bool> ConfirmTransactionAsync(string proposal)
     {
+        if (AutoApproveRevitChanges) return true;
         if (!_allowInteractiveConfirmation) return false;
         _confirmation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         PendingTransaction = proposal;

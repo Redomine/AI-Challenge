@@ -109,6 +109,30 @@ public sealed class GigaChatToolFlowTests
         Assert.Contains("\"status\":\"posted\"", response.Content);
     }
 
+    [Fact]
+    public async Task ModelWorkflowWaitsForOpenBeforeLoadingAndClosing()
+    {
+        var handler = new ModelWorkflowHandler();
+        using var http = new HttpClient(handler);
+        var client = new GigaChatClient(http, new AppOptions(
+            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
+        var provider = new ModelWorkflowProvider();
+
+        var response = await client.GenerateWithToolsAsync(
+            "Выполняй операции с моделью последовательно.",
+            [new ChatMessage("user", "Открой модель, загрузи семейства, синхронизируй и закрой")],
+            provider);
+
+        Assert.Equal(new[]
+        {
+            "revit_custom_open_model",
+            "wait:revit_custom_open_model",
+            "revit_custom_load_families",
+            "revit_custom_sync_relinquish_and_close"
+        }, provider.Events);
+        Assert.Contains("Пайплайн завершён", response.Content);
+    }
+
     private sealed class SelectionWriteToolProvider : IToolProvider, IToolConfirmationProvider
     {
         public List<string> Invocations { get; } = [];
@@ -180,6 +204,76 @@ public sealed class GigaChatToolFlowTests
         }
 
         public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+
+    private sealed class ModelWorkflowProvider : IToolProvider, IToolConfirmationProvider, IToolOperationCoordinator
+    {
+        public List<string> Events { get; } = [];
+        private bool _openCompleted;
+
+        public Task<IReadOnlyList<ToolDefinition>> GetToolsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ToolDefinition>>(
+            [
+                Tool("revit_custom_open_model"),
+                Tool("revit_custom_load_families"),
+                Tool("revit_custom_sync_relinquish_and_close")
+            ]);
+
+        public Task<string> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default)
+        {
+            if (name != "revit_custom_open_model" && !_openCompleted)
+                throw new InvalidOperationException("Следующий инструмент вызван до открытия модели.");
+            Events.Add(name);
+            return Task.FromResult(name == "revit_custom_open_model"
+                ? "{\"status\":\"queued\",\"runId\":\"open-1\"}"
+                : "{\"ok\":true}");
+        }
+
+        public Task<string> WaitForCompletionAsync(string name, string initialResult, CancellationToken cancellationToken = default)
+        {
+            if (name == "revit_custom_open_model")
+            {
+                Events.Add("wait:" + name);
+                _openCompleted = true;
+                return Task.FromResult("{\"status\":\"completed\",\"localPath\":\"C:\\\\Models\\\\Local.rvt\"}");
+            }
+            return Task.FromResult(initialResult);
+        }
+
+        public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) => Task.FromResult(true);
+
+        private static ToolDefinition Tool(string name) => new(name, name, JsonSerializer.SerializeToElement(new { type = "object" }));
+    }
+
+    private sealed class ModelWorkflowHandler : HttpMessageHandler
+    {
+        private int _chatRequest;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.Host.Contains("ngw.devices", StringComparison.Ordinal))
+                return Task.FromResult(Json(new { access_token = "token", expires_at = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds() }));
+            _chatRequest++;
+            return Task.FromResult(_chatRequest switch
+            {
+                1 => Call("revit_custom_open_model", new { path = "C:\\Models\\Central.rvt", detach = false }),
+                2 => Call("revit_custom_load_families", new { path = "C:\\Families" }),
+                3 => Call("revit_custom_sync_relinquish_and_close", new { }),
+                _ => Json(new { choices = new[] { new { message = new { content = "Пайплайн завершён." }, finish_reason = "stop" } }, usage = Usage() })
+            });
+        }
+
+        private static HttpResponseMessage Call(string name, object arguments) => Json(new
+        {
+            choices = new[] { new { message = new { content = "", function_call = new { name, arguments } } } },
+            usage = Usage()
+        });
+
+        private static object Usage() => new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 };
+        private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json")
+        };
     }
 
     private sealed class FindPyRevitButtonFlowHandler : HttpMessageHandler

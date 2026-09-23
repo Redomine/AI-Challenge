@@ -19,5 +19,6 @@ public sealed record ScheduledAgentTask(
     DateTimeOffset NextRunAt,
     DateTimeOffset? LastRunAt = null,
     string? LastResult = null,
-    bool IsRunning = false);
-
+    bool IsRunning = false,
+    bool AutoApproveRevitChanges = false,
+    int OperationTimeoutMinutes = 10);

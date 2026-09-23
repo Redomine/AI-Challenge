@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 
 namespace DesignerAssistant.Revit;
 
-public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, IAsyncDisposable
+public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, IToolOperationCoordinator, IAsyncDisposable
 {
     private static readonly HashSet<string> AllowedTools = new(StringComparer.Ordinal)
     {
@@ -25,6 +25,7 @@ public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, I
     private readonly HashSet<string> _discoveredReadTools = new(StringComparer.Ordinal);
     private McpClient? _client;
     private string _selectedTarget = "auto";
+    private readonly RevitOperationCoordinator _operationCoordinator;
 
     public RevitMcpClient(string? serverPath = null, Func<string, Task<bool>>? confirmWriteAsync = null)
     {
@@ -32,6 +33,21 @@ public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, I
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RvtMcp", "rvt", "server", "0.6.1", "rvt-mcp.exe");
         _confirmWriteAsync = confirmWriteAsync;
+        _operationCoordinator = new RevitOperationCoordinator(CallCoreAsync);
+    }
+
+    public TimeSpan OperationTimeout
+    {
+        get => _operationCoordinator.Timeout;
+        set => _operationCoordinator.Timeout = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(value));
+    }
+
+    public async Task ConfigureOperationTimeoutAsync(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+        if (OperationTimeout == timeout) return;
+        OperationTimeout = timeout;
+        await ResetClientAsync();
     }
 
     public async Task<string> CallAsync(string toolName, IReadOnlyDictionary<string, object?>? arguments = null, CancellationToken cancellationToken = default)
@@ -83,6 +99,9 @@ public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, I
         var proposal = $"Инструмент: {name}\nЦель Revit: {_selectedTarget}\nАргументы: {arguments.GetRawText()}";
         return _confirmWriteAsync?.Invoke(proposal) ?? Task.FromResult(false);
     }
+
+    public Task<string> WaitForCompletionAsync(string name, string initialResult, CancellationToken cancellationToken = default) =>
+        _operationCoordinator.WaitForCompletionAsync(name, initialResult, cancellationToken);
     public Task<string> UseAsync(int year, CancellationToken token = default)
     {
         if (year is not (2022 or 2024)) throw new ArgumentException("Поддерживаются Revit 2022 и 2024.");
@@ -146,6 +165,9 @@ public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, I
     {
         if (_client is not null) return _client;
         if (!File.Exists(_serverPath)) throw new FileNotFoundException("Не найден сервер rvt-mcp.", _serverPath);
+        Environment.SetEnvironmentVariable(
+            "RVTMCP_REQUEST_TIMEOUT_SECONDS",
+            Math.Ceiling(OperationTimeout.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture));
         var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = "rvt-mcp-confirmed-writes",

@@ -14,3 +14,11 @@ public interface IToolConfirmationProvider
 {
     Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default);
 }
+
+public interface IToolOperationCoordinator
+{
+    Task<string> WaitForCompletionAsync(
+        string name,
+        string initialResult,
+        CancellationToken cancellationToken = default);
+}

@@ -42,6 +42,8 @@ public sealed class ToolExecutionPolicy(
         try
         {
             var raw = await provider.InvokeAsync(name, arguments, cancellationToken);
+            if (provider is IToolOperationCoordinator coordinator)
+                raw = await coordinator.WaitForCompletionAsync(name, raw, cancellationToken);
             using var resultDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "null" : raw);
             var result = resultDocument.RootElement.Clone();
             if (IsFailure(result, out var message))

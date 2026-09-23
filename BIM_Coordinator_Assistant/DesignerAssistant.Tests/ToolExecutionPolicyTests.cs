@@ -87,6 +87,20 @@ public sealed class ToolExecutionPolicyTests
         Assert.Equal(0, provider.InvocationCount);
     }
 
+    [Fact]
+    public async Task PendingOperationIsCompletedBeforeReturningToAgent()
+    {
+        var provider = new CoordinatedProvider();
+        var policy = new ToolExecutionPolicy(provider, await provider.GetToolsAsync());
+
+        var result = await policy.ExecuteAsync("revit_custom_open_model", Json("{}"));
+
+        Assert.True(result.Ok);
+        Assert.True(result.Completed);
+        Assert.Equal("ready", result.Result?.GetProperty("modelState").GetString());
+        Assert.Equal(1, provider.WaitCount);
+    }
+
     private static JsonElement Json(string value) => JsonDocument.Parse(value).RootElement.Clone();
 
     private sealed class StubProvider(
@@ -114,5 +128,25 @@ public sealed class ToolExecutionPolicyTests
 
         public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) =>
             Task.FromResult(confirm);
+    }
+
+    private sealed class CoordinatedProvider : IToolProvider, IToolOperationCoordinator, IToolConfirmationProvider
+    {
+        public int WaitCount { get; private set; }
+
+        public Task<IReadOnlyList<ToolDefinition>> GetToolsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ToolDefinition>>([new("revit_custom_open_model", "test", JsonSerializer.SerializeToElement(new { type = "object" }))]);
+
+        public Task<string> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) =>
+            Task.FromResult("{\"status\":\"queued\",\"runId\":\"run-1\"}");
+
+        public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<string> WaitForCompletionAsync(string name, string initialResult, CancellationToken cancellationToken = default)
+        {
+            WaitCount++;
+            return Task.FromResult("{\"status\":\"completed\",\"modelState\":\"ready\"}");
+        }
     }
 }

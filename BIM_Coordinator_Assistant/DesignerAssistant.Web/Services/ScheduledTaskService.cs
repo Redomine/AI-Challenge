@@ -52,7 +52,8 @@ public sealed class ScheduledTaskService : BackgroundService
                 DayOfMonth = task.Period == SchedulePeriod.Monthly ? Math.Clamp(task.DayOfMonth ?? 1, 1, 31) : null,
                 DayOfWeek = task.Period == SchedulePeriod.Weekly ? task.DayOfWeek ?? System.DayOfWeek.Monday : null,
                 NextRunAt = ScheduleCalculator.GetNextRun(task.Period, task.Time, task.DayOfWeek, task.DayOfMonth, DateTimeOffset.Now, TimeZoneInfo.Local),
-                IsRunning = false
+                IsRunning = false,
+                OperationTimeoutMinutes = Math.Clamp(task.OperationTimeoutMinutes, 1, 120)
             };
             var index = _tasks.FindIndex(item => item.Id == normalized.Id);
             if (index < 0) _tasks.Add(normalized);
@@ -118,7 +119,12 @@ public sealed class ScheduledTaskService : BackgroundService
         try
         {
             await using var session = new AssistantSession(_httpClientFactory);
-            await session.InitializeAsync(_environment.ContentRootPath, allowInteractiveConfirmation: false, cancellationToken: cancellationToken);
+            await session.InitializeAsync(
+                _environment.ContentRootPath,
+                allowInteractiveConfirmation: false,
+                autoApproveRevitChanges: scheduledTask.AutoApproveRevitChanges,
+                operationTimeoutMinutes: scheduledTask.OperationTimeoutMinutes,
+                cancellationToken: cancellationToken);
             await session.StartDirectTaskAsync(scheduledTask.Prompt, new TaskPauseOptions(false, false, false), cancellationToken);
             var context = session.CurrentTask;
             result = context?.State == TaskState.Done
@@ -168,7 +174,11 @@ public sealed class ScheduledTaskService : BackgroundService
         try
         {
             _tasks = JsonSerializer.Deserialize<List<ScheduledAgentTask>>(File.ReadAllText(_storagePath), JsonOptions) ?? [];
-            _tasks = _tasks.Select(task => task with { IsRunning = false }).ToList();
+            _tasks = _tasks.Select(task => task with
+            {
+                IsRunning = false,
+                OperationTimeoutMinutes = task.OperationTimeoutMinutes <= 0 ? 10 : Math.Clamp(task.OperationTimeoutMinutes, 1, 120)
+            }).ToList();
         }
         catch (Exception exception)
         {
