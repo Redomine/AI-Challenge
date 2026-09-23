@@ -171,7 +171,7 @@ public static class ToolCapabilityCatalog
     public static bool IsBridgeQuestion(string message) =>
         !string.IsNullOrWhiteSpace(message) &&
         Regex.IsMatch(message, @"\b(mcp\s*bridge|pyrevit|пиревит)\b", RegexOptions.IgnoreCase) &&
-        Regex.IsMatch(message, @"\b(что|какие|как|дай|дать|нужн\w*|требу\w*|запуст\w*|выполн\w*|скрипт\w*|команд\w*)\b", RegexOptions.IgnoreCase);
+        Regex.IsMatch(message, @"\b(что|какие|как|дай|дать|нужн\w*|требу\w*)\b", RegexOptions.IgnoreCase);
 
     public static string BuildBridgeHelp(IReadOnlyCollection<ToolDefinition> tools)
     {

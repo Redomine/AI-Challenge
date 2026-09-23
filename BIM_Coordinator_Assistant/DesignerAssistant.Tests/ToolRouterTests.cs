@@ -388,6 +388,7 @@ public sealed class ToolRouterTests
     [InlineData("Прочитай новые консоли pyRevit", "revit_custom_list_pyrevit_output_windows")]
     [InlineData("Закрой консоль pyRevit по outputUniqueId abc", "revit_custom_close_pyrevit_output_window")]
     [InlineData("Найди кнопку pyRevit Расчёт аэродинамики", "revit_custom_find_pyrevit_buttons")]
+    [InlineData("В модели выделена система воздуховодов. Запусти скрипт Расчет аэродинамики через pyRevit", "revit_custom_find_pyrevit_buttons")]
     [InlineData("Выгрузи для меня все связи", "revit_custom_unload_links_locally")]
     [InlineData("Выдели элементы 12345 и 67890", "revit_select_elements")]
     public async Task RoutesWorkspaceOperationsWithoutLlmRoundTrip(string question, string expectedTool)
