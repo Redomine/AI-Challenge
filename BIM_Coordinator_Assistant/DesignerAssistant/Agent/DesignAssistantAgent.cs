@@ -99,6 +99,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Верни только JSON без Markdown по схеме:
             {"summary":"цель плана","clarification":null,"steps":[{"action":"что сделать","tool":"точное имя или null","arguments":{"известныйАргумент":"значение"},"argumentSources":{"неизвестныйАргумент":"результат шага 1"}}]}
             Каждый обязательный аргумент инструмента должен находиться либо в arguments, либо в argumentSources.
+            Абсолютные пути из запроса пользователя копируй в arguments дословно: не переводи части пути, не меняй кириллицу, пробелы, регистр или разделители.
             Для шага с аргументом parameterName предусмотри получение фактических имён через revit_get_element_parameters: сначала получи ElementId, затем параметры подходящего элемента, а точное parameterName возьми из результата этого шага. Не доверяй регистру имени из запроса пользователя.
             """;
         var revision = string.IsNullOrWhiteSpace(revisionContext)
@@ -125,7 +126,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
                     includeHistory: false,
                     transformResponse: response =>
                     {
-                        LastStructuredPlan = TaskPlanParser.ParseAndValidate(response.Content, tools);
+                        LastStructuredPlan = TaskPlanParser.ParseAndValidate(response.Content, tools, query);
                         return response with { Content = LastStructuredPlan.ToDisplayText() };
                     });
             }
@@ -145,6 +146,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Если для продолжения не хватает конкретных данных пользователя, начни ответ с [CLARIFY] и задай один короткий вопрос.
             Если план объективно нельзя выполнить и его необходимо пересмотреть, начни ответ с [REPLAN] и объясни причину.
             Иначе начни ответ с [EXECUTED] и затем сообщи фактический результат выполнения.
+            Любые пути и другие литеральные значения бери дословно из QUERY или согласованного плана; не переводи и не нормализуй части пути.
             Для любого parameterName сначала используй точное имя из результата revit_get_element_parameters. Единственное совпадение без учёта регистра исправь автоматически. При нескольких совпадениях или отсутствии параметра верни [CLARIFY]. После ошибки отсутствующего параметра не повторяй то же имя.
             """;
         var validationFeedback = string.IsNullOrWhiteSpace(context.ValidationResult)

@@ -257,6 +257,9 @@ public sealed class ToolRouterTests
                 Tool("revit_custom_open_family"),
                 Tool("revit_custom_execute_pyrevit_command"),
                 Tool("revit_custom_get_bridge_operation"),
+                Tool("revit_custom_list_pyrevit_output_windows"),
+                Tool("revit_custom_close_pyrevit_output_window"),
+                Tool("revit_custom_find_pyrevit_buttons"),
                 Tool("revit_custom_unload_links_locally")
             ]);
 
@@ -323,6 +326,8 @@ public sealed class ToolRouterTests
             "revit_list_project_parameters", "revit_custom_summarize_elements", "revit_custom_list_elements",
             "revit_select_elements", "revit_custom_open_model", "revit_custom_open_family",
             "revit_custom_get_bridge_operation", "revit_custom_unload_links_locally",
+            "revit_custom_list_pyrevit_output_windows", "revit_custom_close_pyrevit_output_window",
+            "revit_custom_find_pyrevit_buttons",
             "revit_create_line_based_element", "revit_create_point_based_element",
             "revit_create_surface_based_element", "revit_create_level", "revit_create_grid",
             "revit_create_room", "revit_create_group_from_elements", "revit_operate_element",
@@ -337,7 +342,7 @@ public sealed class ToolRouterTests
 
         var capabilities = ToolCapabilityCatalog.Describe(names.Select(Tool).ToArray());
 
-        Assert.Equal(54, capabilities.Count);
+        Assert.Equal(57, capabilities.Count);
         Assert.All(capabilities, capability =>
         {
             Assert.DoesNotContain("Инструмент revit_", capability.Title);
@@ -380,6 +385,9 @@ public sealed class ToolRouterTests
     [InlineData("Открой C:\\Models\\Test.rvt", "revit_custom_open_model")]
     [InlineData("Загрузи семейство C:\\Families\\Valve.rfa", "revit_custom_open_family")]
     [InlineData("Запусти C:\\Commands\\Расчет.pushbutton для выбранной системы", "revit_custom_execute_pyrevit_command")]
+    [InlineData("Прочитай новые консоли pyRevit", "revit_custom_list_pyrevit_output_windows")]
+    [InlineData("Закрой консоль pyRevit по outputUniqueId abc", "revit_custom_close_pyrevit_output_window")]
+    [InlineData("Найди кнопку pyRevit Расчёт аэродинамики", "revit_custom_find_pyrevit_buttons")]
     [InlineData("Выгрузи для меня все связи", "revit_custom_unload_links_locally")]
     [InlineData("Выдели элементы 12345 и 67890", "revit_select_elements")]
     public async Task RoutesWorkspaceOperationsWithoutLlmRoundTrip(string question, string expectedTool)
@@ -391,7 +399,10 @@ public sealed class ToolRouterTests
         {
             "workspace_dotnet_test", "workspace_dotnet_build", "workspace_read_text_file", "workspace_search_text",
             "workspace_path_exists", "workspace_list_processes", "workspace_is_port_listening", "workspace_run_command_recipe",
-            "revit_custom_open_model", "revit_custom_open_family", "revit_custom_execute_pyrevit_command", "revit_custom_unload_links_locally", "revit_select_elements"
+            "revit_custom_open_model", "revit_custom_open_family", "revit_custom_execute_pyrevit_command",
+            "revit_custom_list_pyrevit_output_windows", "revit_custom_close_pyrevit_output_window",
+            "revit_custom_find_pyrevit_buttons",
+            "revit_custom_unload_links_locally", "revit_select_elements"
         }.Select(Tool).ToArray();
 
         var decision = await router.RouteAsync([new ChatMessage("user", question)], tools);

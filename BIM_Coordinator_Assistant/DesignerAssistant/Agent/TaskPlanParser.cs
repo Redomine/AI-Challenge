@@ -5,7 +5,10 @@ namespace DesignerAssistant.Agent;
 
 public static class TaskPlanParser
 {
-    public static TaskPlan ParseAndValidate(string content, IReadOnlyCollection<ToolDefinition> tools)
+    public static TaskPlan ParseAndValidate(
+        string content,
+        IReadOnlyCollection<ToolDefinition> tools,
+        string? sourceQuery = null)
     {
         try
         {
@@ -34,6 +37,7 @@ public static class TaskPlanParser
                         throw new InvalidDataException($"Инструмент '{toolName}' отсутствует в текущем каталоге.");
                     ValidateRequiredArguments(tool, arguments, sources);
                 }
+                ValidateLiteralPaths(arguments, sourceQuery);
                 steps.Add(new TaskPlanStep(action, toolName, arguments, sources));
             }
             return new TaskPlan(summary, steps, clarification);
@@ -41,6 +45,24 @@ public static class TaskPlanParser
         catch (JsonException exception)
         {
             throw new InvalidDataException($"Planning вернул некорректный JSON: {exception.Message}", exception);
+        }
+    }
+
+    private static void ValidateLiteralPaths(
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        string? sourceQuery)
+    {
+        if (string.IsNullOrWhiteSpace(sourceQuery)) return;
+
+        foreach (var (name, value) in arguments)
+        {
+            if (value.ValueKind != JsonValueKind.String) continue;
+            var text = value.GetString();
+            if (string.IsNullOrWhiteSpace(text) || !Path.IsPathFullyQualified(text)) continue;
+            if (!sourceQuery.Contains(text, StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    $"Абсолютный путь в аргументе '{name}' изменён относительно запроса пользователя. " +
+                    "Скопируй путь дословно, сохранив кириллицу, пробелы и регистр.");
         }
     }
 

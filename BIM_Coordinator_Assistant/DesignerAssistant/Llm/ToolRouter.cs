@@ -272,6 +272,15 @@ public sealed class ToolRouter
             Regex.IsMatch(message, @"\.pushbutton\b", RegexOptions.IgnoreCase) &&
             Regex.IsMatch(message, @"\b(запусти|запустить|выполни|выполнить|расчет|расчёт)\w*\b", RegexOptions.IgnoreCase))
             return "revit_custom_execute_pyrevit_command";
+        if (Has("revit_custom_list_pyrevit_output_windows") &&
+            Regex.IsMatch(message, @"\b(покажи|прочитай|проверь|перечисли)\w*\b.{0,70}\b(консол\w*|окн\w*\s+вывод\w*)\b.{0,30}\b(pyrevit|пиревит)\b|\b(pyrevit|пиревит)\b.{0,40}\b(консол\w*|окн\w*\s+вывод\w*)\b", RegexOptions.IgnoreCase))
+            return "revit_custom_list_pyrevit_output_windows";
+        if (Has("revit_custom_close_pyrevit_output_window") &&
+            Regex.IsMatch(message, @"\b(закрой|закрыть)\w*\b.{0,70}\b(консол\w*|окн\w*)\b.{0,30}\b(pyrevit|пиревит)\b|\b(закрой|закрыть)\w*\b.{0,50}\boutputUniqueId\b", RegexOptions.IgnoreCase))
+            return "revit_custom_close_pyrevit_output_window";
+        if (Has("revit_custom_find_pyrevit_buttons") &&
+            Regex.IsMatch(message, @"\b(найди|покажи|перечисли|отыщи)\w*\b.{0,80}\b(кнопк\w*|команд\w*)\b.{0,35}\b(pyrevit|пиревит)\b|\b(pyrevit|пиревит)\b.{0,45}\b(command\s*id|commandId|кнопк\w*|команд\w*)\b", RegexOptions.IgnoreCase))
+            return "revit_custom_find_pyrevit_buttons";
         if (Has("revit_custom_unload_links_locally") &&
             Regex.IsMatch(message, @"\b(выгрузи|выгрузить|отключи|отключить)\b.{0,60}\b(все\s+)?(revit[- ]?)?(связи|линки)\b", RegexOptions.IgnoreCase))
             return "revit_custom_unload_links_locally";

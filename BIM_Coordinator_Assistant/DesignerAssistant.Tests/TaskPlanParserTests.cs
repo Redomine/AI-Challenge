@@ -67,6 +67,35 @@ public sealed class TaskPlanParserTests
         Assert.Equal("[CLARIFY] Какое значение записать?", plan.ToDisplayText());
     }
 
+    [Fact]
+    public void RejectsTranslatedAbsolutePathFromUserQuery()
+    {
+        const string query = @"Открой C:\Users\Mankaev_r\Desktop\_Тесты\Тестовый файл.rvt";
+        const string json = """
+            {"summary":"Открыть модель","steps":[{"action":"Открыть","tool":"open","arguments":{"path":"C:\\Users\\Mankaev_r\\Desktop\\_Tests\\Тестовый файл.rvt"},"argumentSources":{}}]}
+            """;
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            TaskPlanParser.ParseAndValidate(json, [Tool("open", "path")], query));
+
+        Assert.Contains("изменён относительно запроса", error.Message);
+    }
+
+    [Fact]
+    public void AcceptsExactCyrillicAbsolutePathFromUserQuery()
+    {
+        const string path = @"C:\Users\Mankaev_r\Desktop\_Тесты\Тестовый файл.rvt";
+        var json = JsonSerializer.Serialize(new
+        {
+            summary = "Открыть модель",
+            steps = new[] { new { action = "Открыть", tool = "open", arguments = new { path }, argumentSources = new { } } }
+        });
+
+        var plan = TaskPlanParser.ParseAndValidate(json, [Tool("open", "path")], $"Открой модель {path}");
+
+        Assert.Equal(path, plan.Steps[0].Arguments["path"].GetString());
+    }
+
     private static ToolDefinition Tool(string name, params string[] required) => new(
         name,
         "Тест",

@@ -71,6 +71,49 @@ public sealed class GigaChatToolFlowTests
     }
 
     [Fact]
+    public async Task PostedPyRevitCommandCanFeedOutputReadAndExactClose()
+    {
+        var handler = new PyRevitOutputFlowHandler();
+        using var http = new HttpClient(handler);
+        var client = new GigaChatClient(http, new AppOptions(
+            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
+        var provider = new PyRevitOutputToolProvider();
+
+        var response = await client.GenerateWithToolsAsync(
+            "После posted передай outputWindowIdsBefore в чтение окон и закрывай только новое окно по outputUniqueId.",
+            [new ChatMessage("user", "Запусти команду, прочитай новую консоль и закрой её")],
+            provider);
+
+        Assert.Equal(new[]
+        {
+            "revit_custom_execute_pyrevit_command",
+            "revit_custom_list_pyrevit_output_windows",
+            "revit_custom_close_pyrevit_output_window"
+        }, provider.Invocations);
+        Assert.Equal("new-window", provider.ClosedOutputUniqueId);
+        Assert.Contains("Расчёт завершён", response.Content);
+    }
+
+    [Fact]
+    public async Task LoadedPyRevitButtonPathCanFeedPostedCommand()
+    {
+        var handler = new FindPyRevitButtonFlowHandler();
+        using var http = new HttpClient(handler);
+        var client = new GigaChatClient(http, new AppOptions(
+            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
+        var provider = new FindPyRevitButtonToolProvider();
+
+        var response = await client.GenerateWithToolsAsync(
+            "Сначала найди реально загруженную кнопку и передай возвращённый commandPath в запуск.",
+            [new ChatMessage("user", "Запусти Расчёт аэродинамики")],
+            provider);
+
+        Assert.Equal(new[] { "revit_custom_find_pyrevit_buttons", "revit_custom_execute_pyrevit_command" }, provider.Invocations);
+        Assert.Equal(@"C:\Loaded\Расчёт аэродинамики.pushbutton", provider.ExecutedCommandPath);
+        Assert.Contains("\"status\":\"posted\"", response.Content);
+    }
+
+    [Fact]
     public async Task EmptyResponseAfterToolRetriesFinalTextWithoutRepeatingTool()
     {
         var handler = new EmptyAfterToolHandler();
@@ -166,6 +209,103 @@ public sealed class GigaChatToolFlowTests
                 ? "{\"total_count\":2,\"elements\":[{\"elementId\":101},{\"elementId\":102}]}"
                 : "{\"updatedCount\":2,\"failedCount\":0}");
         }
+    }
+
+    private sealed class PyRevitOutputToolProvider : IToolProvider
+    {
+        public List<string> Invocations { get; } = [];
+        public string ClosedOutputUniqueId { get; private set; } = "";
+
+        public Task<IReadOnlyList<ToolDefinition>> GetToolsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ToolDefinition>>(
+            [
+                new("revit_custom_execute_pyrevit_command", "Press button", JsonSerializer.SerializeToElement(new { type = "object" })),
+                new("revit_custom_list_pyrevit_output_windows", "Read output", JsonSerializer.SerializeToElement(new { type = "object" })),
+                new("revit_custom_close_pyrevit_output_window", "Close output", JsonSerializer.SerializeToElement(new { type = "object" }))
+            ]);
+
+        public Task<string> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default)
+        {
+            Invocations.Add(name);
+            if (name == "revit_custom_execute_pyrevit_command")
+                return Task.FromResult("{\"status\":\"posted\",\"outputWindowIdsBefore\":[\"old-window\"]}");
+            if (name == "revit_custom_list_pyrevit_output_windows")
+                return Task.FromResult("{\"windows\":[{\"outputUniqueId\":\"new-window\",\"isNew\":true,\"text\":\"Расчёт завершён\"}]}");
+            ClosedOutputUniqueId = arguments.GetProperty("outputUniqueId").GetString() ?? "";
+            return Task.FromResult("{\"closed\":true,\"outputUniqueId\":\"new-window\"}");
+        }
+    }
+
+    private sealed class FindPyRevitButtonToolProvider : IToolProvider
+    {
+        public List<string> Invocations { get; } = [];
+        public string ExecutedCommandPath { get; private set; } = "";
+
+        public Task<IReadOnlyList<ToolDefinition>> GetToolsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ToolDefinition>>(
+            [
+                new("revit_custom_find_pyrevit_buttons", "Find loaded button", JsonSerializer.SerializeToElement(new { type = "object" })),
+                new("revit_custom_execute_pyrevit_command", "Press button", JsonSerializer.SerializeToElement(new { type = "object" }))
+            ]);
+
+        public Task<string> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default)
+        {
+            Invocations.Add(name);
+            if (name == "revit_custom_find_pyrevit_buttons")
+                return Task.FromResult("{\"commands\":[{\"title\":\"Расчёт аэродинамики\",\"commandPath\":\"C:\\\\Loaded\\\\Расчёт аэродинамики.pushbutton\",\"commandId\":\"CustomCtrl_test\"}]}");
+            ExecutedCommandPath = arguments.GetProperty("commandPath").GetString() ?? "";
+            return Task.FromResult("{\"status\":\"posted\"}");
+        }
+    }
+
+    private sealed class FindPyRevitButtonFlowHandler : HttpMessageHandler
+    {
+        private int _chatRequest;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.Host.Contains("ngw.devices", StringComparison.Ordinal))
+                return Task.FromResult(Json(new { access_token = "token", expires_at = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds() }));
+            _chatRequest++;
+            return Task.FromResult(_chatRequest switch
+            {
+                1 => Json(new { choices = new[] { new { message = new { function_call = new { name = "route_tool_request", arguments = new { action = "call_tool", tool = "revit_custom_find_pyrevit_buttons", reason = "Нужно найти загруженную кнопку" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                2 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_find_pyrevit_buttons", arguments = new { query = "Расчёт аэродинамики" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                3 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_execute_pyrevit_command", arguments = new { commandPath = "C:\\Loaded\\Расчёт аэродинамики.pushbutton" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                _ => Json(new { choices = new[] { new { message = new { content = "Кнопка нажата." }, finish_reason = "stop" } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } })
+            });
+        }
+
+        private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json")
+        };
+    }
+
+    private sealed class PyRevitOutputFlowHandler : HttpMessageHandler
+    {
+        private int _chatRequest;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.Host.Contains("ngw.devices", StringComparison.Ordinal))
+                return Task.FromResult(Json(new { access_token = "token", expires_at = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds() }));
+
+            _chatRequest++;
+            return Task.FromResult(_chatRequest switch
+            {
+                1 => Json(new { choices = new[] { new { message = new { function_call = new { name = "route_tool_request", arguments = new { action = "call_tool", tool = "revit_custom_execute_pyrevit_command", reason = "Нужно нажать кнопку" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                2 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_execute_pyrevit_command", arguments = new { commandPath = "C:\\Commands\\Run.pushbutton" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                3 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_list_pyrevit_output_windows", arguments = new { knownOutputUniqueIds = new[] { "old-window" } } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                4 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_close_pyrevit_output_window", arguments = new { outputUniqueId = "new-window" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                _ => Json(new { choices = new[] { new { message = new { content = "Расчёт завершён, новая консоль прочитана и закрыта." }, finish_reason = "stop" } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } })
+            });
+        }
+
+        private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json")
+        };
     }
 
     private sealed class EmptyStructuredHandler : HttpMessageHandler
