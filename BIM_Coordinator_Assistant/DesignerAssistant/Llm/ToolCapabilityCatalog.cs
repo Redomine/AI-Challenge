@@ -130,6 +130,17 @@ public static class ToolCapabilityCatalog
 
     public static bool IsWriteTool(ToolDefinition tool) => Describe(tool).IsWrite;
 
+    public static ToolCapability Get(ToolDefinition tool) => Describe(tool);
+
+    public static bool RequiresConfirmation(ToolDefinition tool) =>
+        Describe(tool).IsWrite || tool.Name is
+            "revit_select_elements" or
+            "revit_custom_execute_pyrevit_command" or
+            "revit_custom_close_pyrevit_output_window" or
+            "revit_activate_view" or
+            "revit_show_element_in_view" or
+            "revit_show_message";
+
     public static string BuildUserSummary(
         IReadOnlyCollection<ToolDefinition> tools,
         ToolCapabilityScope requestedScope)

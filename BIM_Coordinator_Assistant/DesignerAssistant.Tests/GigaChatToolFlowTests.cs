@@ -40,9 +40,8 @@ public sealed class GigaChatToolFlowTests
             [new ChatMessage("user", "Прочитай тестовые данные")],
             provider);
 
-        Assert.Equal(1, provider.InvocationCount);
-        Assert.Contains("Инструмент: revit_generic_read", response.Content);
-        Assert.Contains("\"value\":\"Test\"", response.Content);
+        Assert.True(provider.InvocationCount == 1, response.Content);
+        Assert.Equal("Активный вид прочитан.", response.Content);
         using var finalRequest = JsonDocument.Parse(handler.RequestBodies[^1]);
         Assert.Equal("auto", finalRequest.RootElement.GetProperty("function_call").GetString());
     }
@@ -64,10 +63,7 @@ public sealed class GigaChatToolFlowTests
         Assert.Equal(
             new[] { "revit_get_selected_elements", "revit_set_element_parameter_values" },
             provider.Invocations);
-        Assert.Contains("Инструмент: revit_get_selected_elements", response.Content);
-        Assert.Contains("\"total_count\":2", response.Content);
-        Assert.Contains("Инструмент: revit_set_element_parameter_values", response.Content);
-        Assert.Contains("\"updatedCount\":2", response.Content);
+        Assert.Equal("Параметр записан в 2 элемента.", response.Content);
     }
 
     [Fact]
@@ -113,85 +109,7 @@ public sealed class GigaChatToolFlowTests
         Assert.Contains("\"status\":\"posted\"", response.Content);
     }
 
-    [Fact]
-    public async Task EmptyResponseAfterToolRetriesFinalTextWithoutRepeatingTool()
-    {
-        var handler = new EmptyAfterToolHandler();
-        using var http = new HttpClient(handler);
-        var client = new GigaChatClient(http, new AppOptions(
-            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
-        var provider = new GenericCountingToolProvider();
-        var traces = new List<string>();
-
-        var response = await client.GenerateWithToolsAsync(
-            "instructions",
-            [new ChatMessage("user", "Прочитай тестовые данные")],
-            provider,
-            traces.Add);
-
-        Assert.Contains("Инструмент: revit_generic_read", response.Content);
-        Assert.Contains("\"value\":\"Test\"", response.Content);
-        Assert.Equal(1, provider.InvocationCount);
-        Assert.Equal(2, traces.Count(trace => trace.Contains("Finalization retry", StringComparison.Ordinal)));
-        foreach (var body in handler.RequestBodies.TakeLast(2))
-        {
-            using var request = JsonDocument.Parse(body);
-            Assert.Equal("none", request.RootElement.GetProperty("function_call").GetString());
-        }
-    }
-
-    [Fact]
-    public async Task EmptyResponseBeforeToolRetriesWithoutLosingForcedTool()
-    {
-        var handler = new EmptyBeforeToolHandler();
-        using var http = new HttpClient(handler);
-        var client = new GigaChatClient(http, new AppOptions(
-            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
-        var provider = new CountingToolProvider();
-        var traces = new List<string>();
-
-        var response = await client.GenerateWithToolsAsync(
-            "instructions",
-            [new ChatMessage("user", "Что сейчас открыто в Revit?")],
-            provider,
-            traces.Add);
-
-        Assert.Contains("Инструмент: revit_get_current_view_info", response.Content);
-        Assert.Contains("\"viewName\":\"Test\"", response.Content);
-        Assert.Equal(1, provider.InvocationCount);
-        Assert.Equal(2, traces.Count(trace => trace.Contains("Initial retry", StringComparison.Ordinal)));
-        foreach (var body in handler.RequestBodies.Skip(1).Take(3))
-        {
-            using var request = JsonDocument.Parse(body);
-            Assert.Equal(
-                "revit_get_current_view_info",
-                request.RootElement.GetProperty("function_call").GetProperty("name").GetString());
-        }
-    }
-
-    [Fact]
-    public async Task RepeatedEmptyResponsesDirectlyInvokeRoutedToolWithoutRequiredArguments()
-    {
-        var handler = new DirectRoutedFallbackHandler();
-        using var http = new HttpClient(handler);
-        var client = new GigaChatClient(http, new AppOptions(
-            "key", "scope", "model", "tokenizer", 100, "test.db", 10000, 0, 10));
-        var provider = new CountingToolProvider();
-        var traces = new List<string>();
-
-        var response = await client.GenerateWithToolsAsync(
-            "instructions",
-            [new ChatMessage("user", "Что сейчас открыто в Revit?")],
-            provider,
-            traces.Add);
-
-        Assert.Contains("Инструмент: revit_get_current_view_info", response.Content);
-        Assert.Contains("\"viewName\":\"Test\"", response.Content);
-        Assert.Equal(1, provider.InvocationCount);
-        Assert.Contains(traces, trace => trace.Contains("Direct routed fallback", StringComparison.Ordinal));
-    }
-
-    private sealed class SelectionWriteToolProvider : IToolProvider
+    private sealed class SelectionWriteToolProvider : IToolProvider, IToolConfirmationProvider
     {
         public List<string> Invocations { get; } = [];
 
@@ -209,9 +127,11 @@ public sealed class GigaChatToolFlowTests
                 ? "{\"total_count\":2,\"elements\":[{\"elementId\":101},{\"elementId\":102}]}"
                 : "{\"updatedCount\":2,\"failedCount\":0}");
         }
+
+        public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) => Task.FromResult(true);
     }
 
-    private sealed class PyRevitOutputToolProvider : IToolProvider
+    private sealed class PyRevitOutputToolProvider : IToolProvider, IToolConfirmationProvider
     {
         public List<string> Invocations { get; } = [];
         public string ClosedOutputUniqueId { get; private set; } = "";
@@ -234,9 +154,11 @@ public sealed class GigaChatToolFlowTests
             ClosedOutputUniqueId = arguments.GetProperty("outputUniqueId").GetString() ?? "";
             return Task.FromResult("{\"closed\":true,\"outputUniqueId\":\"new-window\"}");
         }
+
+        public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) => Task.FromResult(true);
     }
 
-    private sealed class FindPyRevitButtonToolProvider : IToolProvider
+    private sealed class FindPyRevitButtonToolProvider : IToolProvider, IToolConfirmationProvider
     {
         public List<string> Invocations { get; } = [];
         public string ExecutedCommandPath { get; private set; } = "";
@@ -256,6 +178,8 @@ public sealed class GigaChatToolFlowTests
             ExecutedCommandPath = arguments.GetProperty("commandPath").GetString() ?? "";
             return Task.FromResult("{\"status\":\"posted\"}");
         }
+
+        public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) => Task.FromResult(true);
     }
 
     private sealed class FindPyRevitButtonFlowHandler : HttpMessageHandler
@@ -269,9 +193,8 @@ public sealed class GigaChatToolFlowTests
             _chatRequest++;
             return Task.FromResult(_chatRequest switch
             {
-                1 => Json(new { choices = new[] { new { message = new { function_call = new { name = "route_tool_request", arguments = new { action = "call_tool", tool = "revit_custom_find_pyrevit_buttons", reason = "Нужно найти загруженную кнопку" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
-                2 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_find_pyrevit_buttons", arguments = new { query = "Расчёт аэродинамики" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
-                3 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_execute_pyrevit_command", arguments = new { commandPath = "C:\\Loaded\\Расчёт аэродинамики.pushbutton" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                1 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_find_pyrevit_buttons", arguments = new { query = "Расчёт аэродинамики" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                2 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_execute_pyrevit_command", arguments = new { commandPath = "C:\\Loaded\\Расчёт аэродинамики.pushbutton" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
                 _ => Json(new { choices = new[] { new { message = new { content = "Кнопка нажата." }, finish_reason = "stop" } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } })
             });
         }
@@ -294,10 +217,9 @@ public sealed class GigaChatToolFlowTests
             _chatRequest++;
             return Task.FromResult(_chatRequest switch
             {
-                1 => Json(new { choices = new[] { new { message = new { function_call = new { name = "route_tool_request", arguments = new { action = "call_tool", tool = "revit_custom_execute_pyrevit_command", reason = "Нужно нажать кнопку" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
-                2 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_execute_pyrevit_command", arguments = new { commandPath = "C:\\Commands\\Run.pushbutton" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
-                3 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_list_pyrevit_output_windows", arguments = new { knownOutputUniqueIds = new[] { "old-window" } } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
-                4 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_close_pyrevit_output_window", arguments = new { outputUniqueId = "new-window" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                1 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_execute_pyrevit_command", arguments = new { commandPath = "C:\\Commands\\Run.pushbutton" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                2 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_list_pyrevit_output_windows", arguments = new { knownOutputUniqueIds = new[] { "old-window" } } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
+                3 => Json(new { choices = new[] { new { message = new { content = "", function_call = new { name = "revit_custom_close_pyrevit_output_window", arguments = new { outputUniqueId = "new-window" } } } } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }),
                 _ => Json(new { choices = new[] { new { message = new { content = "Расчёт завершён, новая консоль прочитана и закрыта." }, finish_reason = "stop" } }, usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } })
             });
         }
@@ -390,7 +312,7 @@ public sealed class GigaChatToolFlowTests
 
         public Task<IReadOnlyList<ToolDefinition>> GetToolsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<ToolDefinition>>(
-                [new("revit_generic_read", "Read test data", JsonSerializer.SerializeToElement(new { type = "object" }))]);
+                [new("revit_get_current_view_info", "Read test data", JsonSerializer.SerializeToElement(new { type = "object" }))]);
 
         public Task<string> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default)
         {
@@ -418,12 +340,7 @@ public sealed class GigaChatToolFlowTests
             {
                 1 => Json(new
                 {
-                    choices = new[] { new { message = new { function_call = new { name = "route_tool_request", arguments = new { action = "call_tool", tool = "revit_generic_read", reason = "Нужны данные" } } } } },
-                    usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
-                }),
-                2 => Json(new
-                {
-                    choices = new[] { new { message = new { content = "", function_call = new { name = "revit_generic_read", arguments = new { } } } } },
+                    choices = new[] { new { message = new { content = "", function_call = new { name = "revit_get_current_view_info", arguments = new { } } } } },
                     usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
                 }),
                 _ => Json(new

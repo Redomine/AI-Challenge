@@ -141,7 +141,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
     public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
     {
         var stageInstructions = """
-            Ты находишься только на стадии EXECUTION. Выполни согласованный план в его пределах.
+            Ты находишься только на стадии EXECUTION. В direct mode выполни исходный запрос напрямую; в plan mode выполни согласованный план в его пределах.
             Используй доступные инструменты, когда они необходимы. Не проводи финальную валидацию.
             Если для продолжения не хватает конкретных данных пользователя, начни ответ с [CLARIFY] и задай один короткий вопрос.
             Если план объективно нельзя выполнить и его необходимо пересмотреть, начни ответ с [REPLAN] и объясни причину.
@@ -153,12 +153,30 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             ? ""
             : $"\n\n[VALIDATION_FEEDBACK]\n{context.ValidationResult}\n[/VALIDATION_FEEDBACK]";
         var plan = context.StructuredPlan is null ? context.Plan : JsonSerializer.Serialize(context.StructuredPlan);
-        var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]{validationFeedback}";
+        var input = $"[MODE]\n{context.Mode}\n[/MODE]\n\n[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]{validationFeedback}";
         return RunStageAsync(input, stageInstructions, useTools: true, addUserMessage: false, cancellationToken, stage: TaskState.Execution, includeHistory: false);
     }
 
     public async Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
     {
+        var expectedTools = context.StructuredPlan?.Steps
+            .Where(step => !string.IsNullOrWhiteSpace(step.Tool))
+            .Select(step => step.Tool!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? [];
+        if (expectedTools.Length > 0)
+        {
+            var results = context.ToolResults ?? [];
+            var missing = expectedTools.Where(expected =>
+                !results.Any(result => result.Tool == expected && result.Ok && result.Completed)).ToArray();
+            if (missing.Length > 0)
+            {
+                var report = $"status=RETRY_EXECUTION\nПрограммная проверка: отсутствует успешный завершённый tool result для {string.Join(", ", missing)}.";
+                return new AgentResponse(
+                    new LlmResponse(report, "deterministic_validation_failed", new TokenUsage(0, 0, 0, 0, 0, 0, 0, false)),
+                    0, false, 0);
+            }
+        }
         var stageInstructions = """
             Ты находишься только на стадии VALIDATION. Проверь результат выполнения относительно запроса и согласованного плана.
             Не выполняй задачу заново и не вызывай инструменты.

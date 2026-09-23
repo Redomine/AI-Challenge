@@ -16,6 +16,12 @@ public enum TaskState
     Failed
 }
 
+public enum TaskMode
+{
+    Direct,
+    Plan
+}
+
 public sealed record ExecutionCheckpoint(
     int Attempt = 0,
     IReadOnlySet<string>? CompletedStepIds = null,
@@ -43,7 +49,9 @@ public sealed record TaskContext(
     ExecutionCheckpoint? Checkpoint = null,
     string? FailureReason = null,
     IReadOnlyList<string>? DiagnosticTraces = null,
-    bool ExecutionRetrySafe = true);
+    bool ExecutionRetrySafe = true,
+    IReadOnlyList<ToolResultEnvelope>? ToolResults = null,
+    TaskMode Mode = TaskMode.Plan);
 
 public sealed record TaskPauseOptions(
     bool AfterPlanning = true,

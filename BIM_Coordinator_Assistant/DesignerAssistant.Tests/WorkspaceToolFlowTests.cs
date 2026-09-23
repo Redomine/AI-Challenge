@@ -58,15 +58,10 @@ public sealed class WorkspaceToolFlowTests : IDisposable
             {
                 1 => Json(new
                 {
-                    choices = new[] { new { message = new { function_call = new { name = "route_tool_request", arguments = new { action = "call_tool", tool = "workspace_path_exists", reason = "Нужно проверить файл" } } } } },
-                    usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
-                }),
-                2 => Json(new
-                {
                     choices = new[] { new { message = new { content = "", function_call = new { name = "workspace_path_exists", arguments = new { path = "result.txt" } } } } },
                     usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
                 }),
-                3 => Json(new
+                2 => Json(new
                 {
                     choices = new[] { new { message = new { content = "", function_call = new { name = "workspace_read_text_file", arguments = new { path = "result.txt" } } } } },
                     usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }

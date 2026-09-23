@@ -30,8 +30,18 @@ public sealed class TaskWorkflow
             throw new InvalidOperationException("Сначала завершите текущую задачу.");
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
 
-        Context = new TaskContext(query.Trim(), TaskState.Planning);
+        Context = new TaskContext(query.Trim(), TaskState.Planning, Mode: TaskMode.Plan);
         await BuildPlanAsync(cancellationToken: cancellationToken);
+    }
+
+    public async Task StartDirectAsync(string query, CancellationToken cancellationToken = default)
+    {
+        if (Context is not null && !IsTerminal(Context.State))
+            throw new InvalidOperationException("Сначала завершите текущую задачу.");
+        if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
+
+        Context = new TaskContext(query.Trim(), TaskState.Execution, Mode: TaskMode.Direct);
+        await AdvanceAsync(cancellationToken);
     }
 
     public async Task ApprovePlanAsync(CancellationToken cancellationToken = default)
@@ -265,7 +275,11 @@ public sealed class TaskWorkflow
         {
             LastResponse = await _runner.ExecuteTaskAsync(Context!, cancellationToken);
             var outcome = ParseExecutionOutcome(LastResponse.ModelResponse.Content);
-            Context = Context! with { ExecutionResult = LastResponse.ModelResponse.Content };
+            Context = Context! with
+            {
+                ExecutionResult = LastResponse.ModelResponse.Content,
+                ToolResults = LastResponse.ModelResponse.ToolResults
+            };
             switch (outcome)
             {
                 case ExecutionNeedsClarification clarification:

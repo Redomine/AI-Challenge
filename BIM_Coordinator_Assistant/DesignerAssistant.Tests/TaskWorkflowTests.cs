@@ -6,6 +6,35 @@ namespace DesignerAssistant.Tests;
 public sealed class TaskWorkflowTests
 {
     [Fact]
+    public async Task DirectModeUsesExecutionAndValidationWithoutPlanning()
+    {
+        var runner = new FakeRunner(["[EXECUTED] Готово"], ["[PASS] Проверено"]);
+        var workflow = new TaskWorkflow(runner);
+
+        await workflow.StartDirectAsync("Покажи выбранные элементы");
+
+        Assert.Equal(TaskMode.Direct, workflow.Context?.Mode);
+        Assert.Equal(TaskState.Done, workflow.Context?.State);
+        Assert.Equal(0, runner.PlanningCount);
+        Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal(1, runner.ValidationCount);
+    }
+
+    [Fact]
+    public async Task PlanModeStillStartsWithPlanningAndApproval()
+    {
+        var runner = new FakeRunner(["[EXECUTED] Готово"], ["[PASS] Проверено"]);
+        var workflow = new TaskWorkflow(runner);
+
+        await workflow.StartAsync("Сложная задача");
+
+        Assert.Equal(TaskMode.Plan, workflow.Context?.Mode);
+        Assert.Equal(TaskState.AwaitingPlanApproval, workflow.Context?.State);
+        Assert.Equal(1, runner.PlanningCount);
+        Assert.Equal(0, runner.ExecutionCount);
+    }
+
+    [Fact]
     public async Task RequiresApprovalBeforeExecutionAndCompletesValidTask()
     {
         var runner = new FakeRunner(["[EXECUTED] Готово"], ["[PASS] Проверено"]);

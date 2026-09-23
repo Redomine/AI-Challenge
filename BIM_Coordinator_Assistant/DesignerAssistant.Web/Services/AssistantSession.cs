@@ -72,6 +72,16 @@ public sealed class AssistantSession : IAsyncDisposable
         Changed?.Invoke();
     }
 
+    public async Task StartDirectTaskAsync(
+        string message,
+        TaskPauseOptions pauseOptions,
+        CancellationToken cancellationToken = default)
+    {
+        Workflow.PauseOptions = pauseOptions;
+        await Workflow.StartDirectAsync(message, cancellationToken);
+        Changed?.Invoke();
+    }
+
     public async Task ApprovePlanAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ApprovePlanAsync(cancellationToken);

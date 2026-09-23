@@ -3,7 +3,7 @@ using DesignerAssistant.Models;
 
 namespace DesignerAssistant.Tools;
 
-public sealed class CompositeToolProvider(params IToolProvider[] providers) : IToolProvider
+public sealed class CompositeToolProvider(params IToolProvider[] providers) : IToolProvider, IToolConfirmationProvider
 {
     private readonly IToolProvider[] _providers = providers ?? throw new ArgumentNullException(nameof(providers));
     private IReadOnlyDictionary<string, IToolProvider> _owners = new Dictionary<string, IToolProvider>();
@@ -29,4 +29,9 @@ public sealed class CompositeToolProvider(params IToolProvider[] providers) : IT
         _owners.TryGetValue(name, out var provider)
             ? provider.InvokeAsync(name, arguments, cancellationToken)
             : throw new InvalidOperationException($"Инструмент '{name}' отсутствует в текущем каталоге.");
+
+    public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default) =>
+        _owners.TryGetValue(name, out var provider) && provider is IToolConfirmationProvider confirming
+            ? confirming.ConfirmAsync(name, arguments, cancellationToken)
+            : Task.FromResult(false);
 }

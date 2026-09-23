@@ -9,3 +9,8 @@ public interface IToolProvider
     Task<IReadOnlyList<ToolDefinition>> GetToolsAsync(CancellationToken cancellationToken = default);
     Task<string> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default);
 }
+
+public interface IToolConfirmationProvider
+{
+    Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default);
+}

@@ -3,4 +3,5 @@ namespace DesignerAssistant.Models;
 public sealed record LlmResponse(
     string Content,
     string FinishReason,
-    TokenUsage Usage);
+    TokenUsage Usage,
+    IReadOnlyList<ToolResultEnvelope>? ToolResults = null);

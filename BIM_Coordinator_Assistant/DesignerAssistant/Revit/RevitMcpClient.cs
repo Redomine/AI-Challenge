@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 
 namespace DesignerAssistant.Revit;
 
-public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
+public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, IAsyncDisposable
 {
     private static readonly HashSet<string> AllowedTools = new(StringComparer.Ordinal)
     {
@@ -43,15 +43,7 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
             throw new InvalidOperationException($"Инструмент '{toolName}' запрещён политикой read-only.");
         }
 
-        try
-        {
-            return await CallCoreAsync(toolName, arguments, cancellationToken);
-        }
-        catch (Exception) when ((AllowedTools.Contains(toolName) || _discoveredReadTools.Contains(toolName)) && !cancellationToken.IsCancellationRequested)
-        {
-            await ResetClientAsync();
-            return await CallCoreAsync(toolName, arguments, cancellationToken);
-        }
+        return await CallCoreAsync(toolName, arguments, cancellationToken);
     }
 
     public Task<string> ListTargetsAsync(CancellationToken token = default) => CallAsync("revit_list_available_targets", cancellationToken: token);
@@ -83,16 +75,13 @@ public sealed class RevitMcpClient : IToolProvider, IAsyncDisposable
         var values = arguments.ValueKind == JsonValueKind.Object
             ? arguments.EnumerateObject().ToDictionary(property => property.Name, property => (object?)property.Value.Clone())
             : new Dictionary<string, object?>();
-        if (_discoveredWriteTools.Contains(name))
-        {
-            var proposal = $"Инструмент: {name}\nЦель Revit: {_selectedTarget}\nАргументы: {arguments.GetRawText()}";
-            var approved = _confirmWriteAsync is not null && await _confirmWriteAsync(proposal);
-            if (!approved)
-            {
-                return "{\"ok\":false,\"cancelled\":true,\"message\":\"Пользователь не разрешил транзакцию Revit.\"}";
-            }
-        }
         return await CallAsync(name, values, cancellationToken);
+    }
+
+    public Task<bool> ConfirmAsync(string name, JsonElement arguments, CancellationToken cancellationToken = default)
+    {
+        var proposal = $"Инструмент: {name}\nЦель Revit: {_selectedTarget}\nАргументы: {arguments.GetRawText()}";
+        return _confirmWriteAsync?.Invoke(proposal) ?? Task.FromResult(false);
     }
     public Task<string> UseAsync(int year, CancellationToken token = default)
     {

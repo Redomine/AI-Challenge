@@ -279,7 +279,9 @@
             else if (Session.ExecutionInterrupted)
                 await Session.RefineInterruptedExecutionAsync(text);
             else
-                await Session.StartTaskAsync(text, new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
+                await Session.StartTaskAsync(
+                    text.StartsWith("/plan ", StringComparison.OrdinalIgnoreCase) ? text[6..].Trim() : text,
+                    new TaskPauseOptions(true, _pauseAfterExecution, _pauseAfterValidation));
             await UpdateTaskMetricsAsync();
         }
         catch (Exception e) { await ReportErrorAsync(e); }
