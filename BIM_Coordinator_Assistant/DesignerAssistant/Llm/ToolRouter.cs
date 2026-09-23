@@ -265,8 +265,14 @@ public sealed class ToolRouter
         if (Has("revit_custom_open_model") &&
             Regex.IsMatch(message, @"\b(открой|открыть|загрузи|загрузить)\b.{0,180}\.rvt\b|\.rvt\b.{0,180}\b(открой|открыть|загрузи|загрузить)\b", RegexOptions.IgnoreCase))
             return "revit_custom_open_model";
+        if (Has("revit_custom_load_families") &&
+            Regex.IsMatch(message, @"\b(загрузи|загрузить|подгрузи|подгрузить|обнови|обновить)\w*\b.{0,180}\b(семейств\w*|\.rfa\b|папк\w*)", RegexOptions.IgnoreCase))
+            return "revit_custom_load_families";
+        if (Has("revit_custom_sync_relinquish_and_close") &&
+            Regex.IsMatch(message, @"\b(синхронизируй|синхронизировать|отсинхронизируй|отсинхронизироваться)\w*\b.{0,100}\b(освобод\w*|закрой|закрыть)\b", RegexOptions.IgnoreCase))
+            return "revit_custom_sync_relinquish_and_close";
         if (Has("revit_custom_open_family") &&
-            Regex.IsMatch(message, @"\b(открой|открыть|загрузи|загрузить)\b.{0,180}\.rfa\b|\.rfa\b.{0,180}\b(открой|открыть|загрузи|загрузить)\b", RegexOptions.IgnoreCase))
+            Regex.IsMatch(message, @"\b(открой|открыть)\b.{0,180}\.rfa\b|\.rfa\b.{0,180}\b(открой|открыть)\b", RegexOptions.IgnoreCase))
             return "revit_custom_open_family";
         if (Has("revit_custom_execute_pyrevit_command") &&
             Regex.IsMatch(message, @"\.pushbutton\b", RegexOptions.IgnoreCase) &&

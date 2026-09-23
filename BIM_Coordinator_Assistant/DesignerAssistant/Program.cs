@@ -33,6 +33,20 @@ try
             Console.WriteLine(await smokeClient.DescribeToolsAsync(cancellationSource.Token));
             return;
         }
+        var callIndex = Array.FindIndex(args, value => value.Equals("--call-tool", StringComparison.OrdinalIgnoreCase));
+        if (callIndex >= 0)
+        {
+            if (callIndex + 1 >= args.Length) throw new ArgumentException("После --call-tool укажите имя инструмента.");
+            var toolName = args[callIndex + 1];
+            var argumentsJson = callIndex + 2 < args.Length ? args[callIndex + 2] : "{}";
+            if (argumentsJson.StartsWith("base64:", StringComparison.Ordinal))
+                argumentsJson = Encoding.UTF8.GetString(Convert.FromBase64String(argumentsJson[7..]));
+            using var argumentsDocument = JsonDocument.Parse(argumentsJson);
+            await smokeClient.GetToolsAsync(cancellationSource.Token);
+            Console.WriteLine($"Call {toolName}:");
+            Console.WriteLine(await smokeClient.InvokeAsync(toolName, argumentsDocument.RootElement.Clone(), cancellationSource.Token));
+            return;
+        }
         var executeIndex = Array.FindIndex(args, value => value.Equals("--execute-pyrevit", StringComparison.OrdinalIgnoreCase));
         if (executeIndex >= 0)
         {

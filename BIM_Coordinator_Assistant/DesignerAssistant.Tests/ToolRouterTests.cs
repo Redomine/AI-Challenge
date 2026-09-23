@@ -324,7 +324,7 @@ public sealed class ToolRouterTests
             "revit_get_material_quantities", "revit_get_element_relationships", "revit_list_groups",
             "revit_get_group_members", "revit_list_assemblies", "revit_get_assembly_members",
             "revit_list_project_parameters", "revit_custom_summarize_elements", "revit_custom_list_elements",
-            "revit_select_elements", "revit_custom_open_model", "revit_custom_open_family",
+            "revit_select_elements", "revit_custom_open_model", "revit_custom_open_family", "revit_custom_load_families", "revit_custom_sync_relinquish_and_close",
             "revit_custom_get_bridge_operation", "revit_custom_unload_links_locally",
             "revit_custom_list_pyrevit_output_windows", "revit_custom_close_pyrevit_output_window",
             "revit_custom_find_pyrevit_buttons",
@@ -342,7 +342,7 @@ public sealed class ToolRouterTests
 
         var capabilities = ToolCapabilityCatalog.Describe(names.Select(Tool).ToArray());
 
-        Assert.Equal(57, capabilities.Count);
+        Assert.Equal(59, capabilities.Count);
         Assert.All(capabilities, capability =>
         {
             Assert.DoesNotContain("Инструмент revit_", capability.Title);
@@ -383,7 +383,11 @@ public sealed class ToolRouterTests
     [InlineData("Порт 5080 сейчас слушается?", "workspace_is_port_listening")]
     [InlineData("Покажи git status", "workspace_run_command_recipe")]
     [InlineData("Открой C:\\Models\\Test.rvt", "revit_custom_open_model")]
-    [InlineData("Загрузи семейство C:\\Families\\Valve.rfa", "revit_custom_open_family")]
+    [InlineData("Загрузи семейство C:\\Families\\Valve.rfa", "revit_custom_load_families")]
+    [InlineData("Загрузи все семейства из папки C:\\Families", "revit_custom_load_families")]
+    [InlineData("Обнови семейства версиями из C:\\Families", "revit_custom_load_families")]
+    [InlineData("Открой C:\\Families\\Valve.rfa", "revit_custom_open_family")]
+    [InlineData("Синхронизируй с освобождением и закрой модель", "revit_custom_sync_relinquish_and_close")]
     [InlineData("Запусти C:\\Commands\\Расчет.pushbutton для выбранной системы", "revit_custom_execute_pyrevit_command")]
     [InlineData("Прочитай новые консоли pyRevit", "revit_custom_list_pyrevit_output_windows")]
     [InlineData("Закрой консоль pyRevit по outputUniqueId abc", "revit_custom_close_pyrevit_output_window")]
@@ -400,7 +404,7 @@ public sealed class ToolRouterTests
         {
             "workspace_dotnet_test", "workspace_dotnet_build", "workspace_read_text_file", "workspace_search_text",
             "workspace_path_exists", "workspace_list_processes", "workspace_is_port_listening", "workspace_run_command_recipe",
-            "revit_custom_open_model", "revit_custom_open_family", "revit_custom_execute_pyrevit_command",
+            "revit_custom_open_model", "revit_custom_open_family", "revit_custom_load_families", "revit_custom_sync_relinquish_and_close", "revit_custom_execute_pyrevit_command",
             "revit_custom_list_pyrevit_output_windows", "revit_custom_close_pyrevit_output_window",
             "revit_custom_find_pyrevit_buttons",
             "revit_custom_unload_links_locally", "revit_select_elements"
