@@ -18,6 +18,7 @@ artifacts/
 *.db
 *.db-shm
 *.db-wal
+BIM_Coordinator_Assistant/DesignerAssistant.Web/scheduled-tasks.json
 
 # Windows shortcuts contain machine-specific absolute paths
 *.lnk
