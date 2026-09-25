@@ -6,9 +6,17 @@ builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<AssistantSession>();
 builder.Services.AddSingleton<ScheduledTaskService>();
-builder.Services.AddHostedService(provider => provider.GetRequiredService<ScheduledTaskService>());
+if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != "1")
+{
+    builder.Services.AddHostedService(provider => provider.GetRequiredService<ScheduledTaskService>());
+}
 
 var app = builder.Build();
+if (args is ["--run-scheduled", var taskIdText] && Guid.TryParse(taskIdText, out var taskId))
+{
+    await app.Services.GetRequiredService<ScheduledTaskService>().RunNowAsync(taskId);
+    return;
+}
 if (!app.Environment.IsDevelopment()) app.UseExceptionHandler("/Error");
 app.UseStaticFiles();
 app.UseAntiforgery();

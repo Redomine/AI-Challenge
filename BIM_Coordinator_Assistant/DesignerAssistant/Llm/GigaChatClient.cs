@@ -182,7 +182,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var forcedTool = DetectDeterministicTool(messages.LastOrDefault(message => message.Role == "user")?.Content, tools);
         var toolCallCount = 0;
         var executedToolResults = new List<ToolResultEnvelope>();
-        for (var step = 0; step < 8; step++)
+        for (var step = 0; step < 12; step++)
         {
             object functionChoice = forcedTool is not null
                 ? new Dictionary<string, string> { ["name"] = forcedTool }
@@ -222,7 +222,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
 
             if (message.TryGetProperty("function_call", out var functionCall) && functionCall.ValueKind == JsonValueKind.Object)
             {
-                if (toolCallCount >= 4) throw new ToolCallLimitExceededException(4);
+                if (toolCallCount >= 8) throw new ToolCallLimitExceededException(8);
                 var name = functionCall.GetProperty("name").GetString() ?? throw new JsonException("GigaChat не указал имя функции.");
                 var argumentsElement = functionCall.GetProperty("arguments");
                 using var argumentsDocument = argumentsElement.ValueKind == JsonValueKind.String
@@ -272,7 +272,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                 executedToolResults.ToArray());
         }
 
-        throw new ToolCallLimitExceededException(4);
+        throw new ToolCallLimitExceededException(8);
     }
 
     private static string BuildFunctionDescription(ToolDefinition tool)
@@ -286,6 +286,10 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
     {
         if (string.IsNullOrWhiteSpace(message)) return null;
         var available = tools.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+        if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(покажи|прочитай|выведи)\b.{0,35}\b(журнал|логи|логов|события)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            available.Contains("log_recent_events")) return "log_recent_events";
+        if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(проверь|покажи)\b.{0,35}\b(heartbeat|хартбит|состояние сервиса)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            available.Contains("ops_heartbeat")) return "ops_heartbeat";
         if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(выбранн\w*|выделенн\w*|отмеченн\w*)\s+(элемент\w*|объект\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
             available.Contains("revit_get_selected_elements")) return "revit_get_selected_elements";
         if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(элемент\w*|объект\w*|состав)\b.{0,30}\b(на|активн\w*|текущ\w*)\s+вид\w*\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&

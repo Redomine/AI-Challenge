@@ -43,6 +43,12 @@ public sealed class ToolRouter
         var latestUserMessage = messages.LastOrDefault(message =>
             message.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
         latestUserMessage = ExtractTaskQuery(latestUserMessage);
+        if (Regex.IsMatch(latestUserMessage, @"\b(покажи|прочитай|выведи)\b.{0,35}\b(журнал|логи|логов|события)\b", RegexOptions.IgnoreCase) &&
+            toolNames.Contains("log_recent_events", StringComparer.Ordinal))
+            return new ToolRouteDecision("call_tool", "log_recent_events", "Запрошены записи журнала действий.", 0, 0, 0);
+        if (Regex.IsMatch(latestUserMessage, @"\b(проверь|покажи)\b.{0,35}\b(heartbeat|хартбит|состояние сервиса)\b", RegexOptions.IgnoreCase) &&
+            toolNames.Contains("ops_heartbeat", StringComparer.Ordinal))
+            return new ToolRouteDecision("call_tool", "ops_heartbeat", "Запрошено состояние служебного сервиса.", 0, 0, 0);
         if (ToolCapabilityCatalog.IsBridgeQuestion(latestUserMessage))
         {
             return new ToolRouteDecision(

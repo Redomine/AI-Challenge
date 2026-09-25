@@ -21,4 +21,6 @@ public sealed record ScheduledAgentTask(
     string? LastResult = null,
     bool IsRunning = false,
     bool AutoApproveRevitChanges = false,
-    int OperationTimeoutMinutes = 10);
+    int OperationTimeoutMinutes = 10,
+    int? RevitTargetYear = null,
+    bool NotifyOnSuccess = false);

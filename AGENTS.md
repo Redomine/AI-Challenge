@@ -27,6 +27,12 @@ do not apply here.
 
 ## Multi-step calls
 
+- Keep the periodic scheduler task-agnostic. Do not add task-specific flags,
+  tool-result validators, or hardcoded workflows for an individual scheduled
+  task. Put its procedure and required reporting in its agent prompt; base
+  reported facts on actual tool responses. Change a tool's result contract
+  when the needed facts are absent.
+
 - Support bounded chains such as read context -> obtain IDs -> confirm -> write
   -> report the actual result.
 - Pass real outputs from one tool into the next. Do not substitute empty arrays,

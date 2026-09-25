@@ -278,6 +278,14 @@
                     <label class="toggle-row"><input type="checkbox" @bind="_scheduledDraft.IsEnabled" /> Задача активна</label>
                     <label class="toggle-row"><input type="checkbox" @bind="_scheduledDraft.AutoApproveRevitChanges" /> Автоматически разрешать запросы Revit</label>
                     <label>Таймаут операции Revit, мин.<input type="number" min="1" max="120" @bind="_scheduledDraft.OperationTimeoutMinutes" /></label>
+                    <label>Версия Revit
+                        <select @bind="_scheduledDraft.RevitTargetYear">
+                            <option value="">Автоматически</option>
+                            <option value="2022">2022</option>
+                            <option value="2024">2024</option>
+                        </select>
+                    </label>
+                    <label class="toggle-row"><input type="checkbox" @bind="_scheduledDraft.NotifyOnSuccess" /> Отправить письмо после успешного выполнения</label>
                     <p class="schedule-warning">Без автоматического разрешения периодическая задача остановится перед первым изменением Revit.</p>
                     <div class="form-actions">
                         @if (!_scheduledIsNew) { <button type="button" class="danger" @onclick="DeleteScheduledTaskAsync">Удалить</button> }
@@ -445,7 +453,7 @@
 
     private async Task FinishWithoutValidation()
     {
-        Session.FinishWithoutValidation();
+        await Session.FinishWithoutValidationAsync();
         await UpdateTaskMetricsAsync();
         _notice = "Задача завершена без успешной валидации по решению пользователя.";
     }
@@ -600,13 +608,17 @@
         public bool IsEnabled { get; set; } = true;
         public bool AutoApproveRevitChanges { get; set; }
         public int OperationTimeoutMinutes { get; set; } = 10;
+        public int? RevitTargetYear { get; set; }
+        public bool NotifyOnSuccess { get; set; }
         public ScheduledAgentTask ToTask()
         {
             if (!TimeOnly.TryParse(TimeText, out var time)) throw new InvalidOperationException("Укажите корректное время запуска.");
             return new(Id, Name, Prompt, Period, time, DayOfWeek, DayOfMonth, IsEnabled, DateTimeOffset.Now,
                 AutoApproveRevitChanges: AutoApproveRevitChanges,
-                OperationTimeoutMinutes: Math.Clamp(OperationTimeoutMinutes, 1, 120));
+                OperationTimeoutMinutes: Math.Clamp(OperationTimeoutMinutes, 1, 120),
+                RevitTargetYear: RevitTargetYear,
+                NotifyOnSuccess: NotifyOnSuccess);
         }
-        public static ScheduledTaskDraft From(ScheduledAgentTask task) => new() { Id = task.Id, Name = task.Name, Prompt = task.Prompt, Period = task.Period, TimeText = task.Time.ToString("HH:mm"), DayOfWeek = task.DayOfWeek ?? DayOfWeek.Monday, DayOfMonth = task.DayOfMonth ?? 1, IsEnabled = task.IsEnabled, AutoApproveRevitChanges = task.AutoApproveRevitChanges, OperationTimeoutMinutes = task.OperationTimeoutMinutes };
+        public static ScheduledTaskDraft From(ScheduledAgentTask task) => new() { Id = task.Id, Name = task.Name, Prompt = task.Prompt, Period = task.Period, TimeText = task.Time.ToString("HH:mm"), DayOfWeek = task.DayOfWeek ?? DayOfWeek.Monday, DayOfMonth = task.DayOfMonth ?? 1, IsEnabled = task.IsEnabled, AutoApproveRevitChanges = task.AutoApproveRevitChanges, OperationTimeoutMinutes = task.OperationTimeoutMinutes, RevitTargetYear = task.RevitTargetYear, NotifyOnSuccess = task.NotifyOnSuccess };
     }
 }

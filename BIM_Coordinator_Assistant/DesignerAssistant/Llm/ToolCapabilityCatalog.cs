@@ -25,6 +25,10 @@ public static class ToolCapabilityCatalog
     private static readonly IReadOnlyDictionary<string, ToolCapability> Known =
         new Dictionary<string, ToolCapability>(StringComparer.Ordinal)
         {
+            ["log_append_event"] = Write("log_append_event", "Записать событие", "Добавляет служебное событие в локальный журнал действий без параметров модели и секретов.", "Журнал", ToolCapabilityScope.General, "Запиши событие завершения проверки"),
+            ["log_recent_events"] = Read("log_recent_events", "Прочитать журнал", "Показывает последние записи журнала действий с ограничением количества.", "Журнал", ToolCapabilityScope.General, "Покажи 20 последних действий"),
+            ["ops_heartbeat"] = Read("ops_heartbeat", "Проверить работу сервиса", "Возвращает время запуска и текущее состояние служебного MCP-сервера.", "Операции", ToolCapabilityScope.General, "Проверь heartbeat сервиса"),
+            ["ops_send_notification"] = Write("ops_send_notification", "Отправить уведомление", "Посылает письмо на заранее настроенный адрес получателя; адрес нельзя менять через диалог.", "Операции", ToolCapabilityScope.General, "Пришли письмо о результате задачи"),
             ["workspace_list_files"] = Read("workspace_list_files", "Показать файлы проекта", "Перечисляет файлы внутри рабочего репозитория без чтения содержимого.", "Рабочий проект", ToolCapabilityScope.General, "Покажи C#-файлы проекта"),
             ["workspace_read_text_file"] = Read("workspace_read_text_file", "Прочитать файл проекта", "Читает небольшой текстовый UTF-8 файл внутри рабочего репозитория; секретные и бинарные файлы запрещены.", "Рабочий проект", ToolCapabilityScope.General, "Прочитай DesignerAssistant/Program.cs"),
             ["workspace_search_text"] = Read("workspace_search_text", "Найти текст в проекте", "Ищет строку в небольших текстовых файлах рабочего репозитория.", "Рабочий проект", ToolCapabilityScope.General, "Найди использования TaskWorkflow"),
@@ -135,13 +139,14 @@ public static class ToolCapabilityCatalog
     public static ToolCapability Get(ToolDefinition tool) => Describe(tool);
 
     public static bool RequiresConfirmation(ToolDefinition tool) =>
-        Describe(tool).IsWrite || tool.Name is
+        tool.Name is not ("log_append_event" or "ops_send_notification") &&
+        (Describe(tool).IsWrite || tool.Name is
             "revit_select_elements" or
             "revit_custom_execute_pyrevit_command" or
             "revit_custom_close_pyrevit_output_window" or
             "revit_activate_view" or
             "revit_show_element_in_view" or
-            "revit_show_message";
+            "revit_show_message");
 
     public static string BuildUserSummary(
         IReadOnlyCollection<ToolDefinition> tools,

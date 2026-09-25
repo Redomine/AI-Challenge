@@ -15,6 +15,9 @@ public sealed class AssistantSession : IAsyncDisposable
     private DesignAssistantAgent? _agent;
     private TaskWorkflow? _workflow;
     private RevitMcpClient? _revit;
+    private StdioMcpToolProvider? _log;
+    private StdioMcpToolProvider? _ops;
+    private TaskOperationsReporter? _reporter;
     private TaskCompletionSource<bool>? _confirmation;
     private bool _allowInteractiveConfirmation = true;
 
@@ -50,6 +53,7 @@ public sealed class AssistantSession : IAsyncDisposable
         bool allowInteractiveConfirmation = true,
         bool autoApproveRevitChanges = false,
         int operationTimeoutMinutes = 10,
+        bool automaticNotifications = true,
         CancellationToken cancellationToken = default)
     {
         if (_agent is not null) return;
@@ -73,8 +77,12 @@ public sealed class AssistantSession : IAsyncDisposable
         var invariants = new SqliteInvariantStore(Options.DatabasePath);
         _revit = new RevitMcpClient(confirmWriteAsync: ConfirmTransactionAsync);
         _revit.OperationTimeout = TimeSpan.FromMinutes(OperationTimeoutMinutes);
+        var operationsPath = OperationsMcpPath.Resolve(contentRoot);
+        _log = new StdioMcpToolProvider("log", operationsPath);
+        _ops = new StdioMcpToolProvider("ops", operationsPath);
+        _reporter = new TaskOperationsReporter(_log, _ops, automaticNotifications);
         var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(contentRoot));
-        var tools = new CompositeToolProvider(_revit, workspace);
+        var tools = new AuditedToolProvider(new CompositeToolProvider(_revit, workspace, _log, _ops), _log);
         _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
         await _agent.InitializeAsync(cancellationToken);
         _workflow = new TaskWorkflow(_agent);
@@ -90,7 +98,9 @@ public sealed class AssistantSession : IAsyncDisposable
     {
         await Revit.ConfigureOperationTimeoutAsync(TimeSpan.FromMinutes(OperationTimeoutMinutes));
         Workflow.PauseOptions = pauseOptions;
+        await _reporter!.StartAsync(cancellationToken);
         await Workflow.StartAsync(message, cancellationToken);
+        await _reporter.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -101,97 +111,114 @@ public sealed class AssistantSession : IAsyncDisposable
     {
         await Revit.ConfigureOperationTimeoutAsync(TimeSpan.FromMinutes(OperationTimeoutMinutes));
         Workflow.PauseOptions = pauseOptions;
+        await _reporter!.StartAsync(cancellationToken);
         await Workflow.StartDirectAsync(message, cancellationToken);
+        await _reporter.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task ApprovePlanAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ApprovePlanAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RefinePlanAsync(string feedback, CancellationToken cancellationToken = default)
     {
         await Workflow.RefinePlanAsync(feedback, cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RetryPlanningAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.RetryPlanningAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RefineInterruptedPlanningAsync(string feedback, CancellationToken cancellationToken = default)
     {
         await Workflow.RefineInterruptedPlanningAsync(feedback, cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task SubmitClarificationAsync(string answer, CancellationToken cancellationToken = default)
     {
         await Workflow.SubmitClarificationAsync(answer, cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RetryExecutionAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.RetryExecutionAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RetryInterruptedExecutionAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.RetryInterruptedExecutionAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RefineInterruptedExecutionAsync(string feedback, CancellationToken cancellationToken = default)
     {
         await Workflow.RefineInterruptedExecutionAsync(feedback, cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task ValidateInterruptedExecutionAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ValidateInterruptedExecutionAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task ReplanInterruptedExecutionAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ReplanInterruptedExecutionAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task ReplanAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ReplanAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task ContinueTaskAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.ContinueAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task RetryValidationAsync(CancellationToken cancellationToken = default)
     {
         await Workflow.RetryValidationAsync(cancellationToken);
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
-    public void FinishWithoutValidation()
+    public async Task FinishWithoutValidationAsync(CancellationToken cancellationToken = default)
     {
         Workflow.FinishWithoutValidation();
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         Changed?.Invoke();
     }
 
     public async Task CancelTaskAsync(CancellationToken cancellationToken = default)
     {
         Workflow.Cancel();
+        await _reporter!.ObserveAsync(CurrentTask?.State, cancellationToken);
         await Agent.AppendAssistantMessageAsync("Задача отменена", TaskState.Cancelled, cancellationToken);
         Changed?.Invoke();
     }
@@ -206,6 +233,7 @@ public sealed class AssistantSession : IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(message)) message = "Неизвестная ошибка.";
         await Agent.AppendAssistantMessageAsync($"Ошибка: {message.Trim()}", TaskState.Failed, cancellationToken);
+        await _reporter!.ObserveAsync(TaskState.Failed, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -245,6 +273,15 @@ public sealed class AssistantSession : IAsyncDisposable
     public Task<string> SelectRevitSessionAsync(string selector, CancellationToken cancellationToken = default) =>
         Revit.SelectSessionAsync(selector, cancellationToken);
 
+    public Task<string> SelectRevitYearAsync(int year, CancellationToken cancellationToken = default) =>
+        Revit.UseAsync(year, cancellationToken);
+
+    public Task<bool> ReportScheduledOutcomeAsync(
+        string taskName, string summary, bool success, bool notifyOnSuccess,
+        CancellationToken cancellationToken = default) =>
+        (_reporter ?? throw new InvalidOperationException("Журнал задач не инициализирован."))
+        .ReportScheduledOutcomeAsync(taskName, summary, success, notifyOnSuccess, cancellationToken);
+
     public void ResolveTransaction(bool approved)
     {
         var confirmation = _confirmation;
@@ -258,6 +295,8 @@ public sealed class AssistantSession : IAsyncDisposable
     {
         _confirmation?.TrySetResult(false);
         if (_revit is not null) await _revit.DisposeAsync();
+        if (_log is not null) await _log.DisposeAsync();
+        if (_ops is not null) await _ops.DisposeAsync();
     }
 
     private async Task<bool> ConfirmTransactionAsync(string proposal)

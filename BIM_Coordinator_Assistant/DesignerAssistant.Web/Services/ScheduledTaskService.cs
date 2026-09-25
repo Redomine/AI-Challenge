@@ -114,29 +114,46 @@ public sealed class ScheduledTaskService : BackgroundService
 
     private async Task ExecuteTaskAsync(ScheduledAgentTask scheduledTask, CancellationToken cancellationToken)
     {
-        var finishedAt = DateTimeOffset.Now;
         string result;
+        await using var session = new AssistantSession(_httpClientFactory);
         try
         {
-            await using var session = new AssistantSession(_httpClientFactory);
             await session.InitializeAsync(
                 _environment.ContentRootPath,
                 allowInteractiveConfirmation: false,
                 autoApproveRevitChanges: scheduledTask.AutoApproveRevitChanges,
                 operationTimeoutMinutes: scheduledTask.OperationTimeoutMinutes,
+                automaticNotifications: false,
                 cancellationToken: cancellationToken);
+            if (scheduledTask.RevitTargetYear is int year)
+            {
+                var selected = await session.SelectRevitYearAsync(year, cancellationToken);
+                using var selection = JsonDocument.Parse(selected);
+                var root = selection.RootElement;
+                if (!root.TryGetProperty("ok", out var ok) || ok.ValueKind != JsonValueKind.True ||
+                    !root.TryGetProperty("newTarget", out var target) || target.GetString() != year.ToString())
+                    throw new InvalidOperationException($"Не удалось выбрать Revit {year}: {selected}");
+            }
             await session.StartDirectTaskAsync(scheduledTask.Prompt, new TaskPauseOptions(false, false, false), cancellationToken);
             var context = session.CurrentTask;
-            result = context?.State == TaskState.Done
-                ? context.ValidationResult ?? context.ExecutionResult ?? "Задача выполнена."
+            var success = context?.State == TaskState.Done;
+            result = success
+                ? context!.ValidationResult ?? context.ExecutionResult ?? "Задача выполнена."
                 : $"Остановлено на этапе {context?.State}: {context?.FailureReason ?? context?.ValidationResult ?? context?.ExecutionResult}";
+            var delivered = await session.ReportScheduledOutcomeAsync(
+                scheduledTask.Name, result, success, scheduledTask.NotifyOnSuccess, cancellationToken);
+            if (success && scheduledTask.NotifyOnSuccess)
+                result += delivered ? " Уведомление отправлено." : " Уведомление не отправлено.";
         }
         catch (Exception exception)
         {
             _logger.LogError(exception, "Ошибка периодической задачи {TaskId}", scheduledTask.Id);
             result = $"Ошибка: {exception.Message}";
+            try { await session.ReportScheduledOutcomeAsync(scheduledTask.Name, result, false, false, CancellationToken.None); }
+            catch (Exception logError) { _logger.LogError(logError, "Не удалось записать итог задачи {TaskId}", scheduledTask.Id); }
         }
 
+        var finishedAt = DateTimeOffset.Now;
         await _gate.WaitAsync(CancellationToken.None);
         try
         {
@@ -177,7 +194,11 @@ public sealed class ScheduledTaskService : BackgroundService
             _tasks = _tasks.Select(task => task with
             {
                 IsRunning = false,
-                OperationTimeoutMinutes = task.OperationTimeoutMinutes <= 0 ? 10 : Math.Clamp(task.OperationTimeoutMinutes, 1, 120)
+                OperationTimeoutMinutes = task.OperationTimeoutMinutes <= 0 ? 10 : Math.Clamp(task.OperationTimeoutMinutes, 1, 120),
+                NextRunAt = task.NextRunAt < DateTimeOffset.Now.AddMinutes(-1)
+                    ? ScheduleCalculator.GetNextRun(task.Period, task.Time, task.DayOfWeek, task.DayOfMonth,
+                        DateTimeOffset.Now, TimeZoneInfo.Local)
+                    : task.NextRunAt
             }).ToList();
         }
         catch (Exception exception)

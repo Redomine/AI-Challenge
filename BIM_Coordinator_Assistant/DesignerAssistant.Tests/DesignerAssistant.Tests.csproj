@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DesignerAssistant\DesignerAssistant.csproj" />
+    <ProjectReference Include="..\AssistantOps.Mcp\AssistantOps.Mcp.csproj" />
   </ItemGroup>
 
 </Project>

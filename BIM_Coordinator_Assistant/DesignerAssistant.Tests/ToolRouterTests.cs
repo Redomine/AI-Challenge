@@ -9,6 +9,21 @@ namespace DesignerAssistant.Tests;
 
 public sealed class ToolRouterTests
 {
+    [Theory]
+    [InlineData("Покажи журнал действий", "log_recent_events")]
+    [InlineData("Проверь heartbeat", "ops_heartbeat")]
+    public async Task RoutesOperationalRequestsLocally(string question, string expectedTool)
+    {
+        var handler = new FakeHandler(AnswerResponse());
+        using var http = new HttpClient(handler);
+        var router = new ToolRouter(http, Options(), _ => Task.FromResult("token"));
+        var decision = await router.RouteAsync(
+            [new ChatMessage("user", question)],
+            [Tool("log_recent_events"), Tool("ops_heartbeat")]);
+        Assert.Equal(expectedTool, decision.ToolName);
+        Assert.Equal(0, handler.RequestCount);
+    }
+
     [Fact]
     public async Task RoutesExplicitElementIdWithoutLlmRoundTrip()
     {

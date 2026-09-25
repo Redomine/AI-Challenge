@@ -110,8 +110,11 @@ try
     IMemoryStore memoryStore = new SqliteMemoryStore(options.DatabasePath);
     IUserProfileStore profileStore = new SqliteUserProfileStore(options.DatabasePath);
     await using var revit = new RevitMcpClient(confirmWriteAsync: ConfirmRevitWriteAsync);
+    var operationsPath = OperationsMcpPath.Resolve(Environment.CurrentDirectory);
+    await using var log = new StdioMcpToolProvider("log", operationsPath);
+    await using var ops = new StdioMcpToolProvider("ops", operationsPath);
     var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(Environment.CurrentDirectory));
-    var tools = new CompositeToolProvider(revit, workspace);
+    var tools = new AuditedToolProvider(new CompositeToolProvider(revit, workspace, log, ops), log);
     IDesignAssistantAgent agent = new DesignAssistantAgent(
         llmClient,
         historyStore,
