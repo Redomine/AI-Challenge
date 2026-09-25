@@ -280,6 +280,19 @@ public sealed class TaskWorkflow
                 ExecutionResult = LastResponse.ModelResponse.Content,
                 ToolResults = LastResponse.ModelResponse.ToolResults
             };
+            var failedTool = Context.ToolResults?.FirstOrDefault(result => !result.Ok);
+            if (failedTool is not null || LastResponse.ModelResponse.FinishReason == "tool_error")
+            {
+                var reason = failedTool is null
+                    ? "Вызов инструмента завершился ошибкой."
+                    : $"{failedTool.Tool}: {failedTool.Error?.Message ?? "неизвестная ошибка"}";
+                Context = _machine.Transition(Context with
+                {
+                    FailureReason = reason,
+                    ExecutionRetrySafe = Context.ToolResults?.Any(result => result.Ok && result.Completed) != true
+                }, TaskState.ExecutionInterrupted);
+                return;
+            }
             switch (outcome)
             {
                 case ExecutionNeedsClarification clarification:

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DesignerAssistant.Agent;
 using DesignerAssistant.Models;
 
@@ -5,6 +6,22 @@ namespace DesignerAssistant.Tests;
 
 public sealed class TaskWorkflowTests
 {
+    [Fact]
+    public async Task ToolErrorAfterOpeningModelStopsWithoutRepeatingExecution()
+    {
+        var runner = new ToolErrorRunner();
+        var workflow = new TaskWorkflow(runner);
+
+        await workflow.StartDirectAsync("Открой модель и загрузи семейства");
+
+        Assert.Equal(TaskState.ExecutionInterrupted, workflow.Context?.State);
+        Assert.Equal(1, runner.ExecutionCount);
+        Assert.Equal(0, runner.ValidationCount);
+        Assert.False(workflow.Context?.ExecutionRetrySafe);
+        Assert.Contains("Supply exactly one of path or folderPath", workflow.Context?.FailureReason);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.RetryInterruptedExecutionAsync());
+    }
+
     [Fact]
     public async Task DirectModeUsesExecutionAndValidationWithoutPlanning()
     {
@@ -395,6 +412,38 @@ public sealed class TaskWorkflowTests
             0,
             true,
             0);
+    }
+
+    private sealed class ToolErrorRunner : ITaskStageRunner
+    {
+        public int ExecutionCount { get; private set; }
+        public int ValidationCount { get; private set; }
+
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null,
+            CancellationToken cancellationToken = default, string? storedUserMessage = null) =>
+            throw new InvalidOperationException("Direct mode must not plan.");
+
+        public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ExecutionCount++;
+            var results = new[]
+            {
+                new ToolResultEnvelope(true, "revit_custom_open_model", JsonSerializer.SerializeToElement(new { }),
+                    JsonSerializer.SerializeToElement(new { success = true }), null, true, true, 1, true),
+                new ToolResultEnvelope(false, "revit_custom_load_families", JsonSerializer.SerializeToElement(new { }),
+                    null, new ToolError("invalid_arguments", "Supply exactly one of path or folderPath."),
+                    true, true, 1, true)
+            };
+            return Task.FromResult(new AgentResponse(
+                new LlmResponse("Инструмент revit_custom_load_families не выполнен.", "tool_error",
+                    new TokenUsage(0, 0, 0, 0, 0, 0, 0, true), results), 0, true, 0));
+        }
+
+        public Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
+        {
+            ValidationCount++;
+            throw new InvalidOperationException("Validation must not run after a tool error.");
+        }
     }
 
     private sealed class InterruptedPlanningRunner : ITaskStageRunner
