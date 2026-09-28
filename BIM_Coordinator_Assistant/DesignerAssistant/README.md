@@ -18,7 +18,7 @@ dotnet run --project '.\DesignerAssistant.csproj'
 `DesignerAssistant.Web`, запущенные из этого проекта.
 
 Должна быть зарегистрирована переменная `GIGACHAT_AUTH_KEY`. Значения по
-умолчанию: scope `GIGACHAT_API_PERS`, модель `GigaChat-2`, токенизатор `GigaChat`.
+умолчанию: scope `GIGACHAT_API_PERS`, модель `GigaChat-2-Max`, токенизатор `GigaChat`.
 
 ## MCP для журнала и уведомлений
 

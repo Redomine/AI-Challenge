@@ -164,11 +164,18 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         CancellationToken cancellationToken = default)
     {
         await EnsureAccessTokenAsync(cancellationToken);
-        var tools = await toolProvider.GetToolsAsync(cancellationToken);
+        var latestUserMessage = messages.LastOrDefault(message => message.Role == "user")?.Content;
+        var availableTools = await toolProvider.GetToolsAsync(cancellationToken);
+        var modelAnalysis = IsModelAnalysisRequest(latestUserMessage);
+        var tools = modelAnalysis
+            ? availableTools.Where(tool => ModelAnalysisToolNames.Contains(tool.Name)).ToArray()
+            : availableTools;
         trace?.Invoke($"Tool catalogue: {string.Join(", ", tools.Select(tool => tool.Name))}");
         var conversation = new List<Dictionary<string, object?>>
         {
-            new() { ["role"] = "system", ["content"] = instructions }
+            new() { ["role"] = "system", ["content"] = modelAnalysis
+                ? instructions + "\nДля проверки параметров всей модели сначала собери selectionId, затем вызывай фильтр с фактическим ID из результата. Каждый следующий фильтр получает новый selectionId. Сообщай matched, notMatched, missing, ambiguous и errors только из ответов инструментов; не запрашивай полный список ID."
+                : instructions }
         };
         conversation.AddRange(messages.Select(message => new Dictionary<string, object?>
         {
@@ -179,7 +186,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var totalPrompt = 0;
         var totalCompletion = 0;
         var totalBilled = 0;
-        var forcedTool = DetectDeterministicTool(messages.LastOrDefault(message => message.Role == "user")?.Content, tools);
+        var forcedTool = DetectDeterministicTool(latestUserMessage, tools);
         var toolCallCount = 0;
         var executedToolResults = new List<ToolResultEnvelope>();
         for (var step = 0; step < 12; step++)
@@ -231,7 +238,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                 var arguments = argumentsDocument.RootElement.Clone();
                 trace?.Invoke($"Tool trace: {name} {arguments.GetRawText()}");
                 var toolResult = await policy.ExecuteAsync(name, arguments, cancellationToken);
-                var toolResultJson = toolResult.ToJson();
+                var toolResultJson = ModelAnalysisResultFormatter.Format(toolResult);
                 trace?.Invoke($"Tool result: {name} {FormatTraceResult(toolResultJson)}");
                 executedToolResults.Add(toolResult);
                 forcedTool = null;
@@ -292,10 +299,30 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
             available.Contains("ops_heartbeat")) return "ops_heartbeat";
         if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(выбранн\w*|выделенн\w*|отмеченн\w*)\s+(элемент\w*|объект\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
             available.Contains("revit_get_selected_elements")) return "revit_get_selected_elements";
+        if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(проверь|проверить|проверка|заполненност\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            System.Text.RegularExpressions.Regex.IsMatch(message, @"\bпараметр\w*\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(15\s+инженерн\w*\s+категори\w*|стандартн\w*\s+категори\w*|категори\w*\s+по\s+умолчанию)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            available.Contains("revit_custom_collect_mep_elements")) return "revit_custom_collect_mep_elements";
         if (System.Text.RegularExpressions.Regex.IsMatch(message, @"\b(элемент\w*|объект\w*|состав)\b.{0,30}\b(на|активн\w*|текущ\w*)\s+вид\w*\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
             available.Contains("revit_custom_summarize_elements")) return "revit_custom_summarize_elements";
         return null;
     }
+
+    private static readonly HashSet<string> ModelAnalysisToolNames = new(StringComparer.Ordinal)
+    {
+        "revit_custom_collect_mep_elements", "revit_custom_collect_category_elements",
+        "revit_custom_filter_selection", "revit_custom_summarize_selection",
+        "revit_custom_get_selection_page", "revit_custom_export_selection_json"
+    };
+
+    private static bool IsModelAnalysisRequest(string? message) =>
+        !string.IsNullOrWhiteSpace(message) &&
+        System.Text.RegularExpressions.Regex.IsMatch(message,
+             @"\b(заполненност\w*|выборк\w*)\b|\b(собери|собрать|проверь|проверить)\b.{0,80}\b(инженерн\w*|категори\w*)\b",
+             System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+        !System.Text.RegularExpressions.Regex.IsMatch(message,
+            @"\b(запиши|измени|исправь|удали|создай|загрузи|открой)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     private static LlmResponse CreateToolResultResponse(
         IReadOnlyCollection<ToolResultEnvelope> results,

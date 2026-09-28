@@ -101,6 +101,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Каждый обязательный аргумент инструмента должен находиться либо в arguments, либо в argumentSources.
             Абсолютные пути из запроса пользователя копируй в arguments дословно: не переводи части пути, не меняй кириллицу, пробелы, регистр или разделители.
             Для шага с аргументом parameterName предусмотри получение фактических имён через revit_get_element_parameters: сначала получи ElementId, затем параметры подходящего элемента, а точное parameterName возьми из результата этого шага. Не доверяй регистру имени из запроса пользователя.
+            Исключение для массовой проверки всей модели через revit_custom_filter_selection: используй имя из запроса как гипотезу, а сам инструмент покажет missing и ambiguous; не запрашивай список всех ElementId и передавай selectionId из каждого шага в следующий.
             """;
         var revision = string.IsNullOrWhiteSpace(revisionContext)
             ? ""

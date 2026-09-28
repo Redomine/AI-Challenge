@@ -339,6 +339,9 @@ public sealed class ToolRouterTests
             "revit_get_material_quantities", "revit_get_element_relationships", "revit_list_groups",
             "revit_get_group_members", "revit_list_assemblies", "revit_get_assembly_members",
             "revit_list_project_parameters", "revit_custom_summarize_elements", "revit_custom_list_elements",
+            "revit_custom_collect_mep_elements", "revit_custom_collect_category_elements",
+            "revit_custom_filter_selection", "revit_custom_summarize_selection",
+            "revit_custom_get_selection_page", "revit_custom_export_selection_json",
             "revit_select_elements", "revit_custom_open_model", "revit_custom_open_family", "revit_custom_load_families", "revit_custom_sync_relinquish_and_close",
             "revit_custom_get_bridge_operation", "revit_custom_unload_links_locally",
             "revit_custom_list_pyrevit_output_windows", "revit_custom_close_pyrevit_output_window",
@@ -357,7 +360,7 @@ public sealed class ToolRouterTests
 
         var capabilities = ToolCapabilityCatalog.Describe(names.Select(Tool).ToArray());
 
-        Assert.Equal(59, capabilities.Count);
+        Assert.Equal(65, capabilities.Count);
         Assert.All(capabilities, capability =>
         {
             Assert.DoesNotContain("Инструмент revit_", capability.Title);

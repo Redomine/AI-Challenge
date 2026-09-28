@@ -25,7 +25,7 @@ public sealed record AppOptions(
             ?? "GIGACHAT_API_PERS";
 
         var model = Environment.GetEnvironmentVariable("GIGACHAT_MODEL")
-            ?? "GigaChat-2";
+            ?? "GigaChat-2-Max";
         var tokenizerModel = Environment.GetEnvironmentVariable("GIGACHAT_TOKENIZER_MODEL")
             ?? "GigaChat";
 

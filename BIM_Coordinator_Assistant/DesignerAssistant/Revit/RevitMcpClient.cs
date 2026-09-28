@@ -16,7 +16,10 @@ public sealed class RevitMcpClient : IToolProvider, IToolConfirmationProvider, I
         "revit_get_element_details", "revit_get_element_parameters",
         "revit_get_type_parameters", "revit_list_worksets",
         "revit_analyze_model_statistics", "revit_ai_element_filter"
-        , "revit_custom_summarize_elements", "revit_custom_list_elements"
+        , "revit_custom_summarize_elements", "revit_custom_list_elements",
+        "revit_custom_collect_mep_elements", "revit_custom_collect_category_elements",
+        "revit_custom_filter_selection", "revit_custom_summarize_selection",
+        "revit_custom_get_selection_page", "revit_custom_export_selection_json"
     };
 
     private readonly string _serverPath;
