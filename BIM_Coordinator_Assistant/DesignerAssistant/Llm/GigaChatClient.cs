@@ -173,9 +173,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         trace?.Invoke($"Tool catalogue: {string.Join(", ", tools.Select(tool => tool.Name))}");
         var conversation = new List<Dictionary<string, object?>>
         {
-            new() { ["role"] = "system", ["content"] = modelAnalysis
-                ? instructions + "\nДля проверки параметров всей модели сначала собери selectionId, затем вызывай фильтр с фактическим ID из результата. Каждый следующий фильтр получает новый selectionId. Сообщай matched, notMatched, missing, ambiguous и errors только из ответов инструментов; не запрашивай полный список ID."
-                : instructions }
+            new() { ["role"] = "system", ["content"] = instructions }
         };
         conversation.AddRange(messages.Select(message => new Dictionary<string, object?>
         {
@@ -189,6 +187,29 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var forcedTool = DetectDeterministicTool(latestUserMessage, tools);
         var toolCallCount = 0;
         var executedToolResults = new List<ToolResultEnvelope>();
+        if (forcedTool == "revit_custom_collect_mep_elements")
+        {
+            using var emptyArguments = JsonDocument.Parse("{}");
+            var arguments = emptyArguments.RootElement.Clone();
+            trace?.Invoke($"Tool trace: {forcedTool} {{}}");
+            var result = await policy.ExecuteAsync(forcedTool, arguments, cancellationToken);
+            var formatted = ModelAnalysisResultFormatter.Format(result);
+            trace?.Invoke($"Tool result: {forcedTool} {FormatTraceResult(formatted)}");
+            executedToolResults.Add(result);
+            toolCallCount++;
+            if (!result.Ok || !result.Completed)
+                return CreateToolResultResponse(executedToolResults, "tool_result", totalPrompt, totalCompletion, totalBilled);
+            conversation.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "assistant", ["content"] = "",
+                ["function_call"] = new { name = forcedTool, arguments = new { } }
+            });
+            conversation.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "function", ["name"] = forcedTool, ["content"] = formatted
+            });
+            forcedTool = null;
+        }
         for (var step = 0; step < 12; step++)
         {
             object functionChoice = forcedTool is not null
@@ -272,6 +293,14 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
             var finishReason = choice.TryGetProperty("finish_reason", out var finish) ? finish.GetString() ?? "не указана" : "не указана";
             if (executedToolResults.Any(result => !result.Completed))
                 return CreateToolResultResponse(executedToolResults, "tool_operation_pending", totalPrompt, totalCompletion, totalBilled);
+            if (modelAnalysis && latestUserMessage is not null &&
+                System.Text.RegularExpressions.Regex.IsMatch(latestUserMessage, @"\bпараметр\w*\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+                executedToolResults.All(result => result.Tool != "revit_custom_filter_selection"))
+                return new LlmResponse(
+                    "Сбор элементов выполнен, но проверка параметров не состоялась: агент не вызвал revit_custom_filter_selection.",
+                    "tool_flow_incomplete",
+                    new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false),
+                    executedToolResults.ToArray());
             return new LlmResponse(
                 content.Trim(),
                 executedToolResults.Count > 0 ? "tool_results_grounded" : finishReason,
@@ -315,14 +344,44 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         "revit_custom_get_selection_page", "revit_custom_export_selection_json"
     };
 
-    private static bool IsModelAnalysisRequest(string? message) =>
-        !string.IsNullOrWhiteSpace(message) &&
-        System.Text.RegularExpressions.Regex.IsMatch(message,
-             @"\b(заполненност\w*|выборк\w*)\b|\b(собери|собрать|проверь|проверить)\b.{0,80}\b(инженерн\w*|категори\w*)\b",
-             System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
-        !System.Text.RegularExpressions.Regex.IsMatch(message,
-            @"\b(запиши|измени|исправь|удали|создай|загрузи|открой)\b",
+    private static bool IsModelAnalysisRequest(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        var text = message;
+        var analysisVerbPattern =
+            @"\b(проверь|проверить|проверка|проверку|проверки|проанализируй|проанализировать|" +
+            @"собери|собрать|соберём|соберёт|собер|анализ|анализир\w*)\b";
+        var scopeNounPattern =
+            @"\b(инженерн\w*|категори\w*|модел\w*|проект\w*)\b";
+        var positive = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            $@"{analysisVerbPattern}.{{0,120}}{scopeNounPattern}",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            || System.Text.RegularExpressions.Regex.IsMatch(
+                text,
+                $@"{scopeNounPattern}.{{0,160}}{analysisVerbPattern}",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            || System.Text.RegularExpressions.Regex.IsMatch(
+                text,
+                @"\bпараметр\w*\b.{0,80}\b(категори\w*|инженерн\w*)\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!positive) return false;
+        var writeKeywords = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            @"\b(запиши|измени|исправь|удали|создай|загрузи|открой|обнови)\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (writeKeywords) return false;
+        var showOnlyNoun = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            @"\b(покажи|выведи|отобрази|перечисли|расскажи|опиши)\s+(текущ\w*\s+)?(выборк\w*|заполненност\w*)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (showOnlyNoun && !System.Text.RegularExpressions.Regex.IsMatch(
+                text,
+                @"\b(проверь|проверить|проверка|проанализируй|проанализировать)\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            return false;
+        return true;
+    }
 
     private static LlmResponse CreateToolResultResponse(
         IReadOnlyCollection<ToolResultEnvelope> results,

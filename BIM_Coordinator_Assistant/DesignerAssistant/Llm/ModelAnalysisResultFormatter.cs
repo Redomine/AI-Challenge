@@ -33,7 +33,48 @@ public static class ModelAnalysisResultFormatter
         var toon = Toon.FromJson(json);
         if (toon.Length > MaxContextCharacters)
             throw new InvalidDataException($"TOON-результат {result.Tool} превышает лимит передачи в контекст.");
-        return $"TOON result for {result.Tool} (ok=true, completed={result.Completed.ToString().ToLowerInvariant()}):\n{toon}";
+        object? interpretation = null;
+        if (result.Tool == "revit_custom_filter_selection" &&
+            result.Arguments.ValueKind == JsonValueKind.Object &&
+            result.Arguments.TryGetProperty("operator", out var operation) &&
+            payload.TryGetProperty("matched", out var matched) && matched.TryGetInt32(out var matchedCount) &&
+            payload.TryGetProperty("notMatched", out var notMatched) && notMatched.TryGetInt32(out var notMatchedCount))
+        {
+            var parameterName = result.Arguments.TryGetProperty("parameterName", out var name)
+                ? name.GetString() : null;
+            string? largestCategory = null;
+            var largestCount = 0;
+            if (payload.TryGetProperty("matchedByCategory", out var categories) && categories.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var category in categories.EnumerateArray())
+                {
+                    if (!category.TryGetProperty("count", out var count) || !count.TryGetInt32(out var value) || value <= largestCount)
+                        continue;
+                    largestCount = value;
+                    largestCategory = category.GetProperty("builtInCategory").GetString();
+                }
+            }
+            var largestMatchedCategory = largestCategory is null ? null : new { builtInCategory = largestCategory, count = largestCount };
+            interpretation = operation.GetString() switch
+            {
+                "nullOrEmpty" => new { parameterName, emptyCount = matchedCount, filledCount = notMatchedCount,
+                    matchedByCategoryAppliesTo = "emptyCount", largestEmptyCategory = largestMatchedCategory },
+                "notNullOrEmpty" => new { parameterName, emptyCount = notMatchedCount, filledCount = matchedCount,
+                    matchedByCategoryAppliesTo = "filledCount", largestFilledCategory = largestMatchedCategory },
+                _ => null
+            };
+        }
+        var formatted = JsonSerializer.Serialize(new
+        {
+            format = "TOON result",
+            tool = result.Tool,
+            completed = result.Completed,
+            interpretation,
+            data = toon
+        });
+        if (formatted.Length > MaxContextCharacters)
+            throw new InvalidDataException($"TOON-результат {result.Tool} превышает лимит передачи в контекст.");
+        return formatted;
     }
 
     private static bool ContainsKey(JsonElement element, string key)
