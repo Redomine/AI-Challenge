@@ -102,10 +102,12 @@ try
     }
 
     var options = AppOptions.FromEnvironment();
+    var promptBuilderOptions = PromptBuilderOptions.FromEnvironment();
     long cumulativeBilledTokens = 0;
     var toolDiagnosticsEnabled = false;
     using var httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
     ILlmClient llmClient = new GigaChatClient(httpClient, options);
+    IPromptBuilder promptBuilder = new GigaChatPromptBuilder(httpClient, options, promptBuilderOptions);
     IChatHistoryStore historyStore = new SqliteChatHistoryStore(options.DatabasePath);
     IMemoryStore memoryStore = new SqliteMemoryStore(options.DatabasePath);
     IUserProfileStore profileStore = new SqliteUserProfileStore(options.DatabasePath);
@@ -122,10 +124,12 @@ try
         DesignerAssistantPrompt.Text,
         options,
         tools,
-        profileStore);
+        profileStore,
+        invariantStore: null,
+        promptBuilder: promptBuilder);
     await agent.InitializeAsync(cancellationSource.Token);
 
-    PrintWelcome(options.Model, options.DatabasePath);
+    PrintWelcome(options.Model, options.DatabasePath, promptBuilderOptions);
     PrintRestoredHistory(agent.GetHistory());
     MemoryCapture? pendingMemory = null;
 
@@ -362,10 +366,11 @@ static async Task SaveCapturedMemoryAsync(
     Console.WriteLine($"Сохранено в {(layer == MemoryLayer.Working ? "рабочую" : "долговременную")} память: {value}\n");
 }
 
-static void PrintWelcome(string model, string databasePath)
+static void PrintWelcome(string model, string databasePath, PromptBuilderOptions promptBuilderOptions)
 {
     Console.WriteLine("Помощник BIM-координатора");
     Console.WriteLine($"Модель: {model}");
+    Console.WriteLine($"Prompt-builder: {(promptBuilderOptions.Enabled ? promptBuilderOptions.Model : "отключён")}");
     Console.WriteLine($"История: {databasePath}");
     Console.WriteLine("/help — показать все команды.\n");
 }

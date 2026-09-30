@@ -18,4 +18,5 @@ public interface IDesignAssistantAgent
     Task RememberAsync(MemoryLayer layer, string key, string value, CancellationToken cancellationToken = default);
     Task ClearHistoryAsync(CancellationToken cancellationToken = default);
     Task CompleteTaskAsync(CancellationToken cancellationToken = default);
+    PromptUnderstanding? LastPromptUnderstanding { get; }
 }

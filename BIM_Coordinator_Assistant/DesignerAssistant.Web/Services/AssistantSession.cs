@@ -20,12 +20,14 @@ public sealed class AssistantSession : IAsyncDisposable
     private TaskOperationsReporter? _reporter;
     private TaskCompletionSource<bool>? _confirmation;
     private bool _allowInteractiveConfirmation = true;
+    private IPromptBuilder? _promptBuilder;
 
     public AssistantSession(IHttpClientFactory httpClientFactory) => _httpClientFactory = httpClientFactory;
 
     public event Action? Changed;
     public string? PendingTransaction { get; private set; }
     public AppOptions? Options { get; private set; }
+    public PromptBuilderOptions? PromptBuilderOptions { get; private set; }
     public TaskContext? CurrentTask => _workflow?.Context;
     public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
     public bool PlanningInterrupted => _workflow?.PlanningInterrupted == true;
@@ -33,6 +35,7 @@ public sealed class AssistantSession : IAsyncDisposable
     public bool ExecutionInterrupted => _workflow?.ExecutionInterrupted == true;
     public bool IsTaskPaused => _workflow?.IsPaused == true;
     public bool ValidationFailed => _workflow?.ValidationFailed == true;
+    public bool BuildingPrompt => _workflow?.BuildingPrompt == true;
     public AgentResponse? LastTaskResponse => _workflow?.LastResponse;
     public bool AutoApproveRevitChanges { get; set; }
     public int OperationTimeoutMinutes
@@ -68,9 +71,11 @@ public sealed class AssistantSession : IAsyncDisposable
         }
 
         Options = AppOptions.FromEnvironment();
+        PromptBuilderOptions = PromptBuilderOptions.FromEnvironment();
         var httpClient = _httpClientFactory.CreateClient();
         httpClient.Timeout = TimeSpan.FromMinutes(2);
         var llm = new GigaChatClient(httpClient, Options);
+        _promptBuilder = new GigaChatPromptBuilder(httpClient, Options, PromptBuilderOptions);
         var history = new SqliteChatHistoryStore(Options.DatabasePath);
         var memory = new SqliteMemoryStore(Options.DatabasePath);
         var profiles = new SqliteUserProfileStore(Options.DatabasePath);
@@ -83,7 +88,7 @@ public sealed class AssistantSession : IAsyncDisposable
         _reporter = new TaskOperationsReporter(_log, _ops, automaticNotifications);
         var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(contentRoot));
         var tools = new AuditedToolProvider(new CompositeToolProvider(_revit, workspace, _log, _ops), _log);
-        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
+        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants, _promptBuilder);
         await _agent.InitializeAsync(cancellationToken);
         _workflow = new TaskWorkflow(_agent);
     }

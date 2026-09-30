@@ -75,6 +75,33 @@
                         }
                     </article>
                 }
+                @if (Session.CurrentTask?.PromptUnderstanding is not null)
+                {
+                    var understanding = Session.CurrentTask.PromptUnderstanding;
+                    <details class="stage-message prompt-understanding" open>
+                        <summary>Prompt-builder · @(understanding.Model) @(understanding.UsedFallback ? "· fallback" : string.Empty)</summary>
+                        <p><strong>Цель:</strong> @understanding.Goal</p>
+                        @if (understanding.Constraints.Count > 0)
+                        {
+                            <p><strong>Ограничения:</strong></p>
+                            <ul>@foreach (var constraint in understanding.Constraints) { <li>@constraint</li> }</ul>
+                        }
+                        @if (understanding.RequiredData.Count > 0)
+                        {
+                            <p><strong>Необходимые данные:</strong></p>
+                            <ul>@foreach (var required in understanding.RequiredData) { <li>@required</li> }</ul>
+                        }
+                        @if (understanding.SuccessCriteria.Count > 0)
+                        {
+                            <p><strong>Критерии результата:</strong></p>
+                            <ul>@foreach (var criterion in understanding.SuccessCriteria) { <li>@criterion</li> }</ul>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(understanding.FailureReason))
+                        {
+                            <p class="muted">Причина fallback: @understanding.FailureReason</p>
+                        }
+                    </details>
+                }
                 @if (_busy) { <div class="thinking">Ассистент анализирует запрос...</div> }
             </section>
             <footer class="composer">
@@ -337,7 +364,7 @@
     private ScheduledTaskDraft _scheduledDraft = new();
     private bool _scheduledIsNew = true;
     private IReadOnlyList<string> _lastToolTraces = [];
-    private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
+    private static readonly TaskState[] PrimaryTaskStages = [TaskState.PromptBuilder, TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
     protected override async Task OnInitializedAsync()
     {
@@ -494,6 +521,7 @@
 
     private static string TaskStageCaption(TaskState state) => state switch
     {
+        TaskState.PromptBuilder => "Понимание",
         TaskState.Planning => "План",
         TaskState.PlanningInterrupted => "Планирование прервано",
         TaskState.AwaitingPlanApproval => "Согласование",

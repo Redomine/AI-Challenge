@@ -72,3 +72,19 @@ do not apply here.
   `wwwroot` resolves correctly.
 - Diagnose in this order: ToolRouter trace, invoked tool and arguments,
   `%LOCALAPPDATA%\RvtMcp\mcp-calls.jsonl`, Revit handler result, model response.
+
+## Agent delegation in this repository
+
+- Implementation work in this repository is delegated to OpenCode MiniMax M3
+  driven from Rider. Codex is limited to analysis, code review, and verification
+  only and must not author or edit source files unless the user explicitly
+  switches roles.
+- MiniMax must follow this `AGENTS.md`, the global safety rules at
+  `C:\Users\Mankaev_r\.codex\AGENTS.md`, and `OPENCODE_MINIMAX_DELEGATION.md`.
+- Delegated MiniMax tasks must remain narrow: one bounded unit of work, no
+  cross-repo tool execution, no `git add`/`commit`/`push`/tags/PRs. The user
+  owns change staging.
+- Delegated MiniMax prompts must never include credentials, full RVT contents,
+  private report files, or long element-ID lists. Check `OPENCODE_MINIMAX_DELEGATION.md`
+  before each invocation; the wrapper enforces a size limit but not secret
+  detection.

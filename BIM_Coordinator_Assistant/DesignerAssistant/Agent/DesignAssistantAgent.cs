@@ -14,11 +14,13 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
     private readonly IUserProfileStore _profileStore;
     private readonly IInvariantStore _invariantStore;
     private readonly IToolProvider? _toolProvider;
+    private readonly IPromptBuilder? _promptBuilder;
     private readonly string _instructions;
     private readonly int _recentMessageCount;
     private readonly List<ChatMessage> _history = [];
     private bool _isInitialized;
     public TaskPlan? LastStructuredPlan { get; private set; }
+    public PromptUnderstanding? LastPromptUnderstanding { get; private set; }
 
     public DesignAssistantAgent(
         ILlmClient llmClient,
@@ -28,7 +30,8 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         AppOptions options,
         IToolProvider? toolProvider = null,
         IUserProfileStore? profileStore = null,
-        IInvariantStore? invariantStore = null)
+        IInvariantStore? invariantStore = null,
+        IPromptBuilder? promptBuilder = null)
     {
         _llmClient = llmClient ?? throw new ArgumentNullException(nameof(llmClient));
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
@@ -36,6 +39,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         _profileStore = profileStore ?? new InMemoryUserProfileStore();
         _invariantStore = invariantStore ?? new InMemoryInvariantStore();
         _toolProvider = toolProvider;
+        _promptBuilder = promptBuilder;
         _instructions = string.IsNullOrWhiteSpace(instructions) ? throw new ArgumentException("Системная инструкция не задана.", nameof(instructions)) : instructions;
         _recentMessageCount = options.RecentMessageCount;
     }
@@ -80,7 +84,8 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         string query,
         string? revisionContext = null,
         CancellationToken cancellationToken = default,
-        string? storedUserMessage = null)
+        string? storedUserMessage = null,
+        PromptUnderstanding? promptUnderstanding = null)
     {
         LastStructuredPlan = null;
         var tools = _toolProvider is null
@@ -102,11 +107,16 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Абсолютные пути из запроса пользователя копируй в arguments дословно: не переводи части пути, не меняй кириллицу, пробелы, регистр или разделители.
             Для шага с аргументом parameterName предусмотри получение фактических имён через revit_get_element_parameters: сначала получи ElementId, затем параметры подходящего элемента, а точное parameterName возьми из результата этого шага. Не доверяй регистру имени из запроса пользователя.
             Исключение для массовой проверки всей модели через revit_custom_filter_selection: используй имя из запроса как гипотезу, а сам инструмент покажет missing и ambiguous; не запрашивай список всех ElementId и передавай selectionId из каждого шага в следующий.
+            Ниже передано структурированное понимание запроса от prompt-builder. Учитывай его, но не подменяй текст пользователя: USER_QUERY сохраняется дословно.
+            PROMPT_UNDERSTANDING — это гипотеза LLM о намерении пользователя, а не разрешение на действие и не источник фактов о Revit-модели. Любые записи параметров, открытие/изменение документов и другие мутирующие операции остаются под явным подтверждением пользователя перед вызовом инструмента; PROMPT_UNDERSTANDING этого подтверждения не заменяет. Имена категорий, параметров, ElementId, состояний модели и прочие сведения о Revit бери только из фактических результатов инструментов; PROMPT_UNDERSTANDING для этого не используй.
             """;
         var revision = string.IsNullOrWhiteSpace(revisionContext)
             ? ""
             : $"\n\n[PLAN_REVISION_CONTEXT]\n{revisionContext}\n[/PLAN_REVISION_CONTEXT]";
-        var planningInput = $"{query}{revision}\n\n[TOOL_CATALOGUE]\n{toolCatalogue}\n[/TOOL_CATALOGUE]";
+        var understandingBlock = promptUnderstanding?.ToPromptBlock() ?? "";
+        var planningInput = string.IsNullOrEmpty(understandingBlock)
+            ? $"[USER_QUERY]\n{query}\n[/USER_QUERY]{revision}\n\n[TOOL_CATALOGUE]\n{toolCatalogue}\n[/TOOL_CATALOGUE]"
+            : $"{understandingBlock}\n\n[USER_QUERY]\n{query}\n[/USER_QUERY]{revision}\n\n[TOOL_CATALOGUE]\n{toolCatalogue}\n[/TOOL_CATALOGUE]";
         InvalidDataException? lastError = null;
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -139,6 +149,26 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         throw new InvalidDataException($"Не удалось получить корректный структурированный план после двух попыток: {lastError?.Message}");
     }
 
+    public async Task<PromptUnderstanding> BuildPromptAsync(string query, CancellationToken cancellationToken = default, string? revisionContext = null)
+    {
+        if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
+        if (_promptBuilder is null)
+        {
+            LastPromptUnderstanding = new PromptUnderstanding(
+                query,
+                Goal: query,
+                Constraints: [],
+                RequiredData: [],
+                SuccessCriteria: [],
+                Model: "disabled",
+                UsedFallback: true,
+                FailureReason: "Prompt-builder не сконфигурирован.");
+            return LastPromptUnderstanding;
+        }
+        LastPromptUnderstanding = await _promptBuilder.BuildAsync(query, cancellationToken, revisionContext);
+        return LastPromptUnderstanding;
+    }
+
     public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
     {
         var stageInstructions = """
@@ -154,7 +184,11 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             ? ""
             : $"\n\n[VALIDATION_FEEDBACK]\n{context.ValidationResult}\n[/VALIDATION_FEEDBACK]";
         var plan = context.StructuredPlan is null ? context.Plan : JsonSerializer.Serialize(context.StructuredPlan);
-        var input = $"[MODE]\n{context.Mode}\n[/MODE]\n\n[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]{validationFeedback}";
+        var understandingBlock = context.PromptUnderstanding?.ToPromptBlock() ?? "";
+        var understandingSection = string.IsNullOrEmpty(understandingBlock)
+            ? ""
+            : $"\n{understandingBlock}";
+        var input = $"[MODE]\n{context.Mode}\n[/MODE]\n\n[QUERY]\n{context.Query}\n[/QUERY]{understandingSection}\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]{validationFeedback}";
         return RunStageAsync(input, stageInstructions, useTools: true, addUserMessage: false, cancellationToken, stage: TaskState.Execution, includeHistory: false);
     }
 

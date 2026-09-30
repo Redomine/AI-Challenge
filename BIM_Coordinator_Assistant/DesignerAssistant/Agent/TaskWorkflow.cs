@@ -22,6 +22,7 @@ public sealed class TaskWorkflow
     public bool ExecutionInterrupted => Context?.State == TaskState.ExecutionInterrupted;
     public bool IsPaused => Context?.State == TaskState.AwaitingContinuation;
     public bool ValidationFailed => Context?.State == TaskState.AwaitingValidationDecision;
+    public bool BuildingPrompt => Context?.State == TaskState.PromptBuilder;
     public AgentResponse? LastResponse { get; private set; }
 
     public async Task StartAsync(string query, CancellationToken cancellationToken = default)
@@ -30,8 +31,8 @@ public sealed class TaskWorkflow
             throw new InvalidOperationException("Сначала завершите текущую задачу.");
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
 
-        Context = new TaskContext(query.Trim(), TaskState.Planning, Mode: TaskMode.Plan);
-        await BuildPlanAsync(cancellationToken: cancellationToken);
+        Context = new TaskContext(query.Trim(), TaskState.PromptBuilder, Mode: TaskMode.Plan);
+        await BuildUnderstandingAsync(cancellationToken);
     }
 
     public async Task StartDirectAsync(string query, CancellationToken cancellationToken = default)
@@ -40,8 +41,8 @@ public sealed class TaskWorkflow
             throw new InvalidOperationException("Сначала завершите текущую задачу.");
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
 
-        Context = new TaskContext(query.Trim(), TaskState.Execution, Mode: TaskMode.Direct);
-        await AdvanceAsync(cancellationToken);
+        Context = new TaskContext(query.Trim(), TaskState.PromptBuilder, Mode: TaskMode.Direct);
+        await BuildUnderstandingAsync(cancellationToken);
     }
 
     public async Task ApprovePlanAsync(CancellationToken cancellationToken = default)
@@ -58,15 +59,15 @@ public sealed class TaskWorkflow
 
         var trimmed = feedback.Trim();
         var revision = $"Текущий план:\n{Context!.Plan}\n\nУточнение пользователя:\n{trimmed}";
-        Context = _machine.Transition(Context with { PlanApproved = false }, TaskState.Planning);
-        await BuildPlanAsync(revision, trimmed, cancellationToken);
+        Context = _machine.Transition(Context with { PlanApproved = false }, TaskState.PromptBuilder);
+        await BuildUnderstandingAsync(cancellationToken, revision, trimmed);
     }
 
     public async Task RetryPlanningAsync(CancellationToken cancellationToken = default)
     {
         EnsureState(TaskState.PlanningInterrupted);
-        Context = _machine.Transition(Context! with { FailureReason = null, DiagnosticTraces = null }, TaskState.Planning);
-        await BuildPlanAsync(cancellationToken: cancellationToken);
+        Context = _machine.Transition(Context! with { FailureReason = null, DiagnosticTraces = null }, TaskState.PromptBuilder);
+        await BuildUnderstandingAsync(cancellationToken);
     }
 
     public async Task RefineInterruptedPlanningAsync(string feedback, CancellationToken cancellationToken = default)
@@ -74,8 +75,9 @@ public sealed class TaskWorkflow
         EnsureState(TaskState.PlanningInterrupted);
         if (string.IsNullOrWhiteSpace(feedback)) throw new ArgumentException("Уточнение не должно быть пустым.", nameof(feedback));
         var trimmed = feedback.Trim();
-        Context = _machine.Transition(Context! with { FailureReason = null, DiagnosticTraces = null }, TaskState.Planning);
-        await BuildPlanAsync($"Уточнение пользователя после сбоя планирования:\n{trimmed}", trimmed, cancellationToken);
+        var current = Context!;
+        Context = _machine.Transition(current with { FailureReason = null, DiagnosticTraces = null }, TaskState.PromptBuilder);
+        await BuildUnderstandingAsync(cancellationToken, $"Уточнение пользователя после сбоя планирования:\n{trimmed}", trimmed);
     }
 
     public async Task SubmitClarificationAsync(string answer, CancellationToken cancellationToken = default)
@@ -87,8 +89,8 @@ public sealed class TaskWorkflow
 
         if (request.ResumeState == TaskState.Planning)
         {
-            Context = _machine.Transition(Context with { Clarification = null }, TaskState.Planning);
-            await BuildPlanAsync($"Ответ пользователя на уточнение:\n{text}", text, cancellationToken);
+            Context = _machine.Transition(Context with { Clarification = null }, TaskState.PromptBuilder);
+            await BuildUnderstandingAsync(cancellationToken, $"Ответ пользователя на уточнение:\n{text}", text);
             return;
         }
 
@@ -174,15 +176,15 @@ public sealed class TaskWorkflow
     {
         EnsureState(TaskState.ExecutionInterrupted);
         var reason = Context!.FailureReason;
-        Context = _machine.Transition(Context with { PlanApproved = false, FailureReason = null }, TaskState.Planning);
-        await BuildPlanAsync($"Выполнение было прервано и пользователь запросил новый план:\n{reason}", cancellationToken: cancellationToken);
+        Context = _machine.Transition(Context with { PlanApproved = false, FailureReason = null }, TaskState.PromptBuilder);
+        await BuildUnderstandingAsync(cancellationToken, revision: $"Выполнение было прервано и пользователь запросил новый план:\n{reason}");
     }
 
     public async Task ReplanAsync(CancellationToken cancellationToken = default)
     {
         EnsureState(TaskState.AwaitingValidationDecision);
-        Context = _machine.Transition(Context! with { PlanApproved = false }, TaskState.Planning);
-        await BuildPlanAsync($"Валидация потребовала пересмотра плана:\n{Context.ValidationResult}", cancellationToken: cancellationToken);
+        Context = _machine.Transition(Context! with { PlanApproved = false }, TaskState.PromptBuilder);
+        await BuildUnderstandingAsync(cancellationToken, revision: $"Валидация потребовала пересмотра плана:\n{Context.ValidationResult}");
     }
 
     public void FinishWithoutValidation()
@@ -200,12 +202,65 @@ public sealed class TaskWorkflow
         LastResponse = CreateWorkflowResponse("Задача отменена", "task_state_cancelled");
     }
 
+    private async Task BuildUnderstandingAsync(CancellationToken cancellationToken, string? revision = null, string? storedUserMessage = null)
+    {
+        EnsureState(TaskState.PromptBuilder);
+        PromptUnderstanding understanding;
+        try
+        {
+            understanding = await _runner.BuildPromptAsync(Context!.Query, cancellationToken, revision);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var fallback = new PromptUnderstanding(
+                Context!.Query,
+                Goal: Context.Query,
+                Constraints: [],
+                RequiredData: [],
+                SuccessCriteria: [],
+                Model: "error",
+                UsedFallback: true,
+                FailureReason: exception.Message);
+            Context = _machine.Transition(
+                Context with { PromptUnderstanding = fallback, FailureReason = exception.Message, DiagnosticTraces = [] },
+                Context.Mode == TaskMode.Direct ? TaskState.Execution : TaskState.Planning);
+            if (Context.Mode == TaskMode.Direct)
+            {
+                await AdvanceAsync(cancellationToken);
+            }
+            else
+            {
+                await BuildPlanAsync(revision, storedUserMessage, cancellationToken);
+            }
+            return;
+        }
+        Context = _machine.Transition(Context! with { PromptUnderstanding = understanding },
+            Context.Mode == TaskMode.Direct ? TaskState.Execution : TaskState.Planning);
+        if (Context.Mode == TaskMode.Direct)
+        {
+            await AdvanceAsync(cancellationToken);
+        }
+        else
+        {
+            await BuildPlanAsync(revision, storedUserMessage, cancellationToken);
+        }
+    }
+
     private async Task BuildPlanAsync(string? revision = null, string? storedUserMessage = null, CancellationToken cancellationToken = default)
     {
         EnsureState(TaskState.Planning);
         try
         {
-            LastResponse = await _runner.PlanTaskAsync(Context!.Query, revision, cancellationToken, storedUserMessage);
+            LastResponse = await _runner.PlanTaskAsync(
+                Context!.Query,
+                revision,
+                cancellationToken,
+                storedUserMessage,
+                Context.PromptUnderstanding);
         }
         catch (OperationCanceledException)
         {

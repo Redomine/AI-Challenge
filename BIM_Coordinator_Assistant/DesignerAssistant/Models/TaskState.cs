@@ -2,6 +2,7 @@ namespace DesignerAssistant.Models;
 
 public enum TaskState
 {
+    PromptBuilder,
     Planning,
     PlanningInterrupted,
     AwaitingPlanApproval,
@@ -51,7 +52,8 @@ public sealed record TaskContext(
     IReadOnlyList<string>? DiagnosticTraces = null,
     bool ExecutionRetrySafe = true,
     IReadOnlyList<ToolResultEnvelope>? ToolResults = null,
-    TaskMode Mode = TaskMode.Plan);
+    TaskMode Mode = TaskMode.Plan,
+    PromptUnderstanding? PromptUnderstanding = null);
 
 public sealed record TaskPauseOptions(
     bool AfterPlanning = true,

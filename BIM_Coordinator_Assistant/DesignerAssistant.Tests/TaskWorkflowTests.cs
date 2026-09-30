@@ -387,7 +387,7 @@ public sealed class TaskWorkflowTests
         public string? RevisionContext { get; private set; }
         public string? StoredUserMessage { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null)
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null)
         {
             PlanningCount++;
             RevisionContext = revisionContext;
@@ -420,7 +420,7 @@ public sealed class TaskWorkflowTests
         public int ValidationCount { get; private set; }
 
         public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null,
-            CancellationToken cancellationToken = default, string? storedUserMessage = null) =>
+            CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null) =>
             throw new InvalidOperationException("Direct mode must not plan.");
 
         public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
@@ -452,7 +452,7 @@ public sealed class TaskWorkflowTests
         public string? RevisionContext { get; private set; }
         public string? StoredUserMessage { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null)
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null)
         {
             PlanningCount++;
             RevisionContext = revisionContext;
@@ -479,7 +479,7 @@ public sealed class TaskWorkflowTests
     {
         public string? ReplanningReport { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null)
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null)
         {
             ReplanningReport = revisionContext;
             return Task.FromResult(Response("1. Сокращённый план"));
@@ -502,7 +502,7 @@ public sealed class TaskWorkflowTests
     {
         public int ExecutionCount { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null) =>
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null) =>
             Task.FromResult(Response("1. Изменить модель"));
 
         public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
@@ -526,7 +526,7 @@ public sealed class TaskWorkflowTests
         public int ExecutionCount { get; private set; }
         public int ValidationCount { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null) =>
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null) =>
             Task.FromResult(Response("1. Изменить модель"));
 
         public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
@@ -556,7 +556,7 @@ public sealed class TaskWorkflowTests
         public string? RevisionContext { get; private set; }
         public string? StoredUserMessage { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null)
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null)
         {
             _planningCount++;
             RevisionContext = revisionContext;
@@ -579,7 +579,7 @@ public sealed class TaskWorkflowTests
         public int ExecutionCount { get; private set; }
         public int ValidationCount { get; private set; }
 
-        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null) =>
+        public Task<AgentResponse> PlanTaskAsync(string query, string? revisionContext = null, CancellationToken cancellationToken = default, string? storedUserMessage = null, PromptUnderstanding? promptUnderstanding = null) =>
             Task.FromResult(Response("1. Выполнить задачу"));
 
         public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
