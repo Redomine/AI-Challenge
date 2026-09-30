@@ -1,0 +1,17 @@
+{
+  "id": "12345",
+  "type": "page",
+  "title": "Тестовая страница: вложенные expand и excerpt",
+  "version": {"number": 7},
+  "body": {
+    "storage": {
+      "value": "<h1>Введение</h1><p>Это вводный абзац про серверы и стойки.</p><h2>Архитектура</h2><ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">Подробности сети</ac:parameter><ac:rich-text-body><p>Текст внутри expand про VLAN и маршрутизацию.</p><ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">Вложенный блок</ac:parameter><ac:rich-text-body><p>Самый глубокий уровень вложенности expand с примером IP-адреса 10.0.0.1.</p></ac:rich-text-body></ac:structured-macro><p>Ещё текст внешнего expand после вложенного.</p></ac:rich-text-body></ac:structured-macro><h2>Эксплуатация</h2><p>Описание эксплуатации и мониторинга.</p>",
+      "representation": "storage"
+    },
+    "view": {
+      "value": "<h1>Введение</h1><p>Это вводный абзац про серверы и стойки.</p><h2>Архитектура</h2><div class=\"expand-content\"><p>Текст внутри expand про VLAN и маршрутизацию.</p><p>Самый глубокий уровень вложенности expand с примером IP-адреса 10.0.0.1.</p><p>Ещё текст внешнего expand после вложенного.</p></div><h2>Эксплуатация</h2><p>Описание эксплуатации и мониторинга.</p><p>Дополнительный абзац из view, которого не было в storage: спецификация стоечного PDU.</p>",
+      "representation": "view"
+    },
+    "_expandable": {"editor": "", "atlas_doc_format": "", "view": "", "export_view": "", "styled_view": "", "dynamic": "", "editor2": "", "anonymous_export_view": ""}
+  }
+}

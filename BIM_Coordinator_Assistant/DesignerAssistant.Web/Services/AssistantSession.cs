@@ -19,6 +19,7 @@ public sealed class AssistantSession : IAsyncDisposable
     private StdioMcpToolProvider? _ops;
     private TaskOperationsReporter? _reporter;
     private TaskCompletionSource<bool>? _confirmation;
+    private RagQueryService? _ragQuery;
     private bool _allowInteractiveConfirmation = true;
 
     public AssistantSession(IHttpClientFactory httpClientFactory) => _httpClientFactory = httpClientFactory;
@@ -50,6 +51,7 @@ public sealed class AssistantSession : IAsyncDisposable
 
     public async Task InitializeAsync(
         string contentRoot,
+        RagQueryService? ragQuery = null,
         bool allowInteractiveConfirmation = true,
         bool autoApproveRevitChanges = false,
         int operationTimeoutMinutes = 10,
@@ -60,6 +62,7 @@ public sealed class AssistantSession : IAsyncDisposable
         _allowInteractiveConfirmation = allowInteractiveConfirmation;
         AutoApproveRevitChanges = autoApproveRevitChanges;
         OperationTimeoutMinutes = operationTimeoutMinutes;
+        _ragQuery = ragQuery;
         var databasePath = Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DB_PATH");
         if (string.IsNullOrWhiteSpace(databasePath))
         {
@@ -90,6 +93,24 @@ public sealed class AssistantSession : IAsyncDisposable
 
     public Task<AgentResponse> AskAsync(string message, CancellationToken cancellationToken = default) =>
         Agent.AskAsync(message, cancellationToken);
+
+    /// <summary>
+    /// Отвечает на вопрос в режиме RAG или без поиска. Делегирует
+    /// работу <see cref="RagQueryService"/>. Используется
+    /// UI-переключателем и автотестом. Не трогает workflow Revit,
+    /// поэтому вызов безопасен параллельно с активной задачей.
+    /// </summary>
+    public Task<RagQueryResult> AskRagAsync(
+        string question,
+        RagMode mode,
+        CancellationToken cancellationToken = default)
+    {
+        if (_ragQuery is null)
+        {
+            throw new InvalidOperationException("RAG-сервис не инициализирован.");
+        }
+        return _ragQuery.QueryAsync(question, mode, cancellationToken);
+    }
 
     public async Task StartTaskAsync(
         string message,

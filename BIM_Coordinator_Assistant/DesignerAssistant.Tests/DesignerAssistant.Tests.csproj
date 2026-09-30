@@ -19,7 +19,60 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DesignerAssistant\DesignerAssistant.csproj" />
+    <ProjectReference Include="..\DesignerAssistant.Web\DesignerAssistant.Web.csproj" />
     <ProjectReference Include="..\AssistantOps.Mcp\AssistantOps.Mcp.csproj" />
   </ItemGroup>
+
+  <!--
+  AssistantOps.Mcp запускается как stdio-MCP-сервер. Когда у тестов появляется
+  ссылка на DesignerAssistant.Web, его deps.json перетягивает фреймворк
+  Microsoft.AspNetCore.App, и NuGet начинает исключать из выходного каталога
+  некоторые Microsoft.Extensions.* сборки (например, Hosting.dll и
+  Logging.dll), без которых MCP-сервер падает при старте с
+  FileNotFoundException. Решение: после Build явно копируем нужные
+  сборки из bin-каталога AssistantOps.Mcp в bin-output тестов, чтобы
+  процесс их находил рядом со своим .deps.json.
+  -->
+  <Target Name="CopyMcpRuntimeAssemblies" AfterTargets="Build">
+    <PropertyGroup>
+      <_McpBin>$(MSBuildThisFileDirectory)..\AssistantOps.Mcp\$(OutputPath)</_McpBin>
+    </PropertyGroup>
+    <ItemGroup>
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Hosting.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Hosting.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.Configuration.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.Console.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.Debug.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.EventLog.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Logging.EventSource.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Options.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Options.ConfigurationExtensions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.DependencyInjection.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.DependencyInjection.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.Binder.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.CommandLine.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.EnvironmentVariables.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.FileExtensions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.Json.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Configuration.UserSecrets.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Diagnostics.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Diagnostics.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.FileProviders.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.FileProviders.Physical.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.FileSystemGlobbing.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Primitives.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)Microsoft.Extensions.Caching.Abstractions.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)System.Diagnostics.EventLog.dll" />
+      <_McpRuntimeFiles Include="$(_McpBin)System.Diagnostics.DiagnosticSource.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_McpRuntimeFiles)"
+          DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_McpBin)%(Filename)%(Extension)')" />
+  </Target>
 
 </Project>

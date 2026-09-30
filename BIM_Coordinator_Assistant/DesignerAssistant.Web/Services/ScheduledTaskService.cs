@@ -120,6 +120,7 @@ public sealed class ScheduledTaskService : BackgroundService
         {
             await session.InitializeAsync(
                 _environment.ContentRootPath,
+                ragQuery: null,
                 allowInteractiveConfirmation: false,
                 autoApproveRevitChanges: scheduledTask.AutoApproveRevitChanges,
                 operationTimeoutMinutes: scheduledTask.OperationTimeoutMinutes,

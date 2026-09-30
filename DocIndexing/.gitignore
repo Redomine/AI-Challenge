@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+index_out/
+index/
+out/
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/

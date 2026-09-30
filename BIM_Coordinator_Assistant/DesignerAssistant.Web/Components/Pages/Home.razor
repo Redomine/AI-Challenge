@@ -3,6 +3,8 @@
 @inject AssistantSession Session
 @inject ScheduledTaskService Scheduler
 @inject IWebHostEnvironment Environment
+@inject RagQueryService RagQuery
+@inject AutoTestRunner AutoTest
 
 <PageTitle>BIM Assistant</PageTitle>
 
@@ -15,6 +17,7 @@
 
         <nav class="primary-nav" aria-label="Разделы">
             <button class="@NavClass("chat")" @onclick='@(() => OpenSection("chat"))'>Чат</button>
+            <button class="@NavClass("rag")" @onclick='@(() => OpenSection("rag"))'>RAG-чат</button>
             <button class="@NavClass("profiles")" @onclick="OpenProfilesAsync">Профили</button>
             <button class="@NavClass("prompt")" @onclick='@(() => OpenSection("prompt"))'>Базовый prompt</button>
             <button class="@NavClass("invariants")" @onclick="OpenInvariantsAsync">Инварианты</button>
@@ -158,6 +161,129 @@
                     }
                 </div>
             </footer>
+        }
+        else if (_section == "rag")
+        {
+            <header class="workspace-header">
+                <div>
+                    <h1>RAG-чат</h1>
+                    <p>Локальный поиск по индексу + LLM либо прямой запрос LLM. Без инструментов Revit.</p>
+                </div>
+                <div class="rag-mode-toggle">
+                    <label class="rag-mode-option @(_ragMode == RagMode.Rag ? "active" : "")">
+                        <input type="radio" name="rag-mode" checked="@(_ragMode == RagMode.Rag)" @onchange="() => _ragMode = RagMode.Rag" /> RAG
+                    </label>
+                    <label class="rag-mode-option @(_ragMode == RagMode.NoRag ? "active" : "")">
+                        <input type="radio" name="rag-mode" checked="@(_ragMode == RagMode.NoRag)" @onchange="() => _ragMode = RagMode.NoRag" /> без RAG
+                    </label>
+                </div>
+            </header>
+            <section class="rag-layout">
+                <div class="rag-composer">
+                    <textarea @bind="_ragQuestion" @bind:event="oninput" rows="3" placeholder="Вопрос по локальной базе знаний" disabled="@_ragBusy"></textarea>
+                    <div class="rag-composer-actions">
+                        <span class="rag-status">@_ragStatus</span>
+                        <div class="composer-buttons">
+                            <button class="secondary" @onclick="ResetRagAsync" disabled="@_ragBusy">Очистить</button>
+                            <button class="primary" @onclick="SendRagAsync" disabled="@(_ragBusy || string.IsNullOrWhiteSpace(_ragQuestion))">Отправить</button>
+                        </div>
+                    </div>
+                </div>
+                @if (_ragLast is not null)
+                {
+                    <article class="rag-answer">
+                        <header>
+                            <strong>@(_ragLast.Mode == RagMode.Rag ? "RAG-ответ" : "Ответ без RAG")</strong>
+                            <span>@(_ragLast.SearchSucceeded ? $"Найдено {_ragLast.RetrievedCount}" : "Поиск не выполнен")</span>
+                        </header>
+                        <pre>@_ragLast.Answer</pre>
+                        @if (!string.IsNullOrWhiteSpace(_ragLast.Error))
+                        {
+                            <div class="rag-error">@_ragLast.Error</div>
+                        }
+                        @if (_ragLast.Sources.Count > 0)
+                        {
+                            <details class="rag-sources" open>
+                                <summary>Источники (@_ragLast.Sources.Count)</summary>
+                                <ol>
+                                    @foreach (var source in _ragLast.Sources)
+                                    {
+                                        <li>
+                                            <div><strong>@source.Title</strong> <span class="muted">@source.Source@(source.PdfPage is int p ? $" · стр. {p}" : "")</span></div>
+                                            <small class="muted">@source.Section</small>
+                                            <p>@source.Text</p>
+                                        </li>
+                                    }
+                                </ol>
+                            </details>
+                        }
+                    </article>
+                }
+                <article class="rag-autotest">
+                    <header>
+                        <div>
+                            <strong>Автотест: 10 контрольных вопросов</strong>
+                            <p class="muted">Прогоняет контрольные вопросы в режимах no-rag и rag, считает фактические термины, источник и секцию.</p>
+                        </div>
+                        <div class="rag-composer-actions">
+                            <button class="secondary" @onclick="RunAutoTestAsync" disabled="@_ragBusy">Запустить автотест</button>
+                            @if (_autoTestCancellation is not null)
+                            {
+                                <button class="secondary" @onclick="CancelAutoTest">Остановить</button>
+                            }
+                        </div>
+                    </header>
+                    @if (_autoTestProgress.Count > 0)
+                    {
+                        <pre class="rag-progress">@string.Join("\n", _autoTestProgress)</pre>
+                    }
+                    @if (_autoTestReport is not null)
+                    {
+                        <div class="rag-summary">
+                            <span>Всего: <strong>@_autoTestReport.Total</strong></span>
+                            <span>Прошло: <strong>@_autoTestReport.Passed</strong></span>
+                            <span>С ошибкой: <strong>@_autoTestReport.WithErrors</strong></span>
+                            <span class="muted">RAG-режим: @_autoTestReport.RagRuns.Count · No-RAG: @_autoTestReport.NoRagRuns.Count</span>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(_autoTestReport.Error))
+                        {
+                            <div class="rag-error">@_autoTestReport.Error</div>
+                        }
+                        <details class="rag-runs" open>
+                            <summary>Результаты по вопросам</summary>
+                            <ol>
+                                @foreach (var run in _autoTestReport.Runs)
+                                {
+                                    <li>
+                                        <div>
+                                            <strong>#@run.Index · @run.Mode</strong>
+                                            <span class="muted">@run.Question</span>
+                                        </div>
+                                        <div class="rag-checks">
+                                            <span class="rag-check @(run.FactCheckPassed ? "ok" : "fail")">термины: @(run.ExpectedFactTerms.Count == 0 ? "—" : $"{run.FoundFactTerms.Count}/{run.ExpectedFactTerms.Count}")</span>
+                                            <span class="rag-check @(run.SourceCheckPassed ? "ok" : "fail")">источник: @run.ExpectedSource</span>
+                                            <span class="rag-check @(run.SectionCheckPassed ? "ok" : "fail")">секция: @(run.ExpectedSectionContains ?? "—")</span>
+                                            @if (!string.IsNullOrWhiteSpace(run.Error)) { <span class="rag-check fail">ошибка: @run.Error</span> }
+                                        </div>
+                                        <pre>@run.Answer</pre>
+                                        @if (run.Sources.Count > 0)
+                                        {
+                                            <details><summary>Источники (@run.Sources.Count)</summary>
+                                                <ol>
+                                                    @foreach (var s in run.Sources)
+                                                    {
+                                                        <li><strong>@s.Title</strong> <span class="muted">@s.Source@(s.PdfPage is int p ? $" · стр. {p}" : "")</span> <small class="muted">@s.Section</small></li>
+                                                    }
+                                                </ol>
+                                            </details>
+                                        }
+                                    </li>
+                                }
+                            </ol>
+                        </details>
+                    }
+                </article>
+            </section>
         }
         else if (_section == "profiles")
         {
@@ -337,13 +463,21 @@
     private ScheduledTaskDraft _scheduledDraft = new();
     private bool _scheduledIsNew = true;
     private IReadOnlyList<string> _lastToolTraces = [];
+    private RagMode _ragMode = RagMode.Rag;
+    private string _ragQuestion = "";
+    private string _ragStatus = "";
+    private bool _ragBusy;
+    private RagQueryResult? _ragLast;
+    private List<string> _autoTestProgress = new();
+    private AutoTestReport? _autoTestReport;
+    private CancellationTokenSource? _autoTestCancellation;
     private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
     protected override async Task OnInitializedAsync()
     {
         Session.Changed += OnSessionChanged;
         Scheduler.Changed += OnSchedulerChanged;
-        try { await Session.InitializeAsync(Environment.ContentRootPath); _activeProfile = await Session.GetProfileAsync(); _ready = true; }
+        try { await Session.InitializeAsync(Environment.ContentRootPath, RagQuery); _activeProfile = await Session.GetProfileAsync(); _ready = true; }
         catch (Exception exception) { _error = exception.Message; }
     }
 
@@ -464,6 +598,77 @@
         await UpdateTaskMetricsAsync();
     }
     private bool TaskIsActive => Session.CurrentTask is { State: not (TaskState.Done or TaskState.Cancelled or TaskState.Failed) };
+
+    private async Task SendRagAsync()
+    {
+        var question = _ragQuestion.Trim();
+        if (question.Length == 0) return;
+        _ragBusy = true; _ragStatus = "Запрос к модели..."; _notice = null;
+        try
+        {
+            _ragLast = await RagQuery.QueryAsync(question, _ragMode);
+            _ragStatus = _ragLast.SearchSucceeded || _ragMode == RagMode.NoRag
+                ? $"Готово · режим {_ragLast.Mode}"
+                : $"Поиск не выполнен";
+        }
+        catch (Exception exception) { _ragStatus = "Ошибка"; _notice = exception.Message; }
+        finally { _ragBusy = false; }
+    }
+
+    private void ResetRagAsync()
+    {
+        _ragQuestion = "";
+        _ragLast = null;
+        _ragStatus = "";
+    }
+
+    private async Task RunAutoTestAsync()
+    {
+        _ragBusy = true;
+        _autoTestCancellation = new CancellationTokenSource();
+        _autoTestProgress = new List<string> { "Загружаю контрольные вопросы..." };
+        _autoTestReport = null;
+        _ragStatus = "Автотест запущен";
+        try
+        {
+            IReadOnlyList<AutoTestCase> cases;
+            try
+            {
+                cases = await AutoTest.LoadCasesAsync(_autoTestCancellation.Token);
+            }
+            catch (Exception loadEx)
+            {
+                _notice = $"Не удалось загрузить контрольные вопросы: {loadEx.Message}";
+                _ragBusy = false;
+                return;
+            }
+            _autoTestProgress.Clear();
+            _autoTestProgress.Add($"Загружено {cases.Count} вопросов");
+            var progress = new Progress<string>(line =>
+            {
+                _autoTestProgress.Add(line);
+                _ = InvokeAsync(StateHasChanged);
+            });
+            _autoTestReport = await AutoTest.RunAsync(cases, progress, _autoTestCancellation.Token);
+            if (_autoTestReport.Error is not null)
+            {
+                _autoTestProgress.Add($"Ошибка: {_autoTestReport.Error}");
+            }
+            else
+            {
+                _autoTestProgress.Add($"Завершено: {_autoTestReport.Passed}/{_autoTestReport.Total} прошло, {_autoTestReport.WithErrors} с ошибкой");
+            }
+            _ragStatus = "Автотест завершён";
+        }
+        catch (Exception exception) { _notice = exception.Message; _ragStatus = "Ошибка автотеста"; }
+        finally
+        {
+            _ragBusy = false;
+            _autoTestCancellation?.Dispose();
+            _autoTestCancellation = null;
+        }
+    }
+    private void CancelAutoTest() => _autoTestCancellation?.Cancel();
     private async Task UpdateTaskMetricsAsync()
     {
         var response = Session.LastTaskResponse;

@@ -20,5 +20,12 @@ artifacts/
 *.db-wal
 BIM_Coordinator_Assistant/DesignerAssistant.Web/scheduled-tasks.json
 
+# DocIndexing local virtualenv and outputs
+DocIndexing/.venv/
+DocIndexing/**/__pycache__/
+DocIndexing/index_out/
+DocIndexing/index/
+DocIndexing/*.sqlite3
+
 # Windows shortcuts contain machine-specific absolute paths
 *.lnk

@@ -1,0 +1,17 @@
+{
+  "id": "99001",
+  "type": "page",
+  "title": "Синтетическая страница с шумом и вложенными expand",
+  "version": {"number": 3},
+  "body": {
+    "storage": {
+      "value": "<h1>Синтетическая страница</h1><div class=\"aura-panel\"><p>Содержимое aura-панели, которая не должна подавлять дальнейшее содержимое.</p></div><div class=\"toc-macro\"><ac:structured-macro ac:name=\"status\"><ac:parameter ac:name=\"title\">Тестовый статус</ac:parameter><ac:rich-text-body><p>Содержимое статус-макроса.</p></ac:rich-text-body></ac:structured-macro></div><h2>Раздел А</h2><ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">Внешний expand A1</ac:parameter><ac:rich-text-body><p>Текст внутри внешнего expand A1.</p><ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">Вложенный expand A2</ac:parameter><ac:rich-text-body><p>Текст внутри вложенного expand A2.</p><ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">Самый глубокий expand A3</ac:parameter><ac:rich-text-body><p>Текст самого глубокого expand A3.</p></ac:rich-text-body></ac:structured-macro><p>Хвостовой текст вложенного expand A2.</p></ac:rich-text-body></ac:structured-macro><p>Хвостовой текст внешнего expand A1.</p></ac:rich-text-body></ac:structured-macro><table><tbody><tr><th>Колонка 1</th><th>Колонка 2</th></tr><tr><td>Ячейка 1-1</td><td>Ячейка 1-2</td></tr></tbody></table><h2>Раздел Б</h2><ul><li>Первый элемент списка.</li><li>Второй элемент списка.</li></ul><p>Завершающий абзац после шумного фрагмента.</p>",
+      "representation": "storage"
+    },
+    "view": {
+      "value": "<h1>Синтетическая страница</h1><div class=\"aura-panel\"><p>Содержимое aura-панели, которая не должна подавлять дальнейшее содержимое.</p></div><div class=\"toc-macro\"><div class=\"status-macro\">Тестовый статус: Содержимое статус-макроса.</div></div><h2>Раздел А</h2><div class=\"expand-content\"><p>Текст внутри внешнего expand A1.</p><p>Текст внутри вложенного expand A2.</p><p>Текст самого глубокого expand A3.</p><p>Хвостовой текст вложенного expand A2.</p><p>Хвостовой текст внешнего expand A1.</p></div><h2>Раздел А</h2><table><tbody><tr><th>Колонка 1</th><th>Колонка 2</th></tr><tr><td>Ячейка 1-1</td><td>Ячейка 1-2</td></tr></tbody></table><h2>Раздел Б</h2><ul><li>Первый элемент списка.</li><li>Второй элемент списка.</li></ul><p>Завершающий абзац после шумного фрагмента.</p><p>Уникальный view-абзац про PDU, которого не было в storage.</p>",
+      "representation": "view"
+    },
+    "_expandable": {"editor": "", "atlas_doc_format": "", "view": "", "export_view": "", "styled_view": "", "dynamic": "", "editor2": "", "anonymous_export_view": ""}
+  }
+}

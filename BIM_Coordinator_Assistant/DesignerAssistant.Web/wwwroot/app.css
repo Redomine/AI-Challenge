@@ -148,6 +148,43 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .confirmation pre { max-height: 300px; overflow: auto; padding: 12px; background: #eef1ef; border: 1px solid #d3dbd7; white-space: pre-wrap; }
 .confirmation > div { display: flex; justify-content: flex-end; gap: 8px; }
 
+.rag-mode-toggle { display: inline-flex; padding: 4px; background: #eef1ef; border: 1px solid #d6ddda; border-radius: 6px; gap: 4px; }
+.rag-mode-option { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 4px; cursor: pointer; color: #526159; font-size: 13px; }
+.rag-mode-option.active { color: #152019; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.rag-mode-option input { margin: 0; }
+
+.rag-layout { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 16px; padding: 20px 28px 28px; overflow-y: auto; }
+.rag-composer textarea { width: 100%; padding: 11px 12px; color: #1d2522; background: #fff; border: 1px solid #bfc9c4; border-radius: 5px; outline: none; resize: vertical; }
+.rag-composer textarea:focus { border-color: #3b7659; box-shadow: 0 0 0 3px rgba(59,118,89,.1); }
+.rag-composer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; }
+.rag-status { color: #64716b; font-size: 12px; }
+
+.rag-answer { padding: 16px 18px; background: #fff; border: 1px solid #d7dedb; border-radius: 6px; }
+.rag-answer > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.rag-answer pre { max-height: 260px; overflow: auto; margin: 0; padding: 12px; background: #f4f6f5; border-radius: 4px; white-space: pre-wrap; line-height: 1.5; font-family: inherit; }
+.rag-error { margin-top: 10px; padding: 8px 10px; color: #592d25; background: #fff5f2; border: 1px solid #dba99d; border-radius: 4px; font-size: 12px; }
+.rag-sources { margin-top: 14px; }
+.rag-sources summary { cursor: pointer; font-weight: 700; color: #526159; font-size: 12px; }
+.rag-sources ol { margin: 8px 0 0; padding: 0 0 0 18px; }
+.rag-sources li { margin-bottom: 10px; }
+.rag-sources li p { margin: 5px 0 0; padding: 8px 10px; background: #f4f6f5; border-radius: 4px; line-height: 1.45; white-space: pre-wrap; }
+
+.rag-autotest { padding: 16px 18px; background: #fff; border: 1px solid #d7dedb; border-radius: 6px; }
+.rag-autotest > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 12px; }
+.rag-autotest > header strong { display: block; font-size: 14px; }
+.rag-autotest > header p { margin: 4px 0 0; font-size: 12px; }
+.rag-progress { max-height: 140px; overflow: auto; margin: 0; padding: 10px 12px; background: #f4f6f5; border-radius: 4px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.rag-summary { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; padding: 8px 12px; background: #f4f6f5; border-radius: 4px; font-size: 12px; }
+.rag-summary strong { color: #152019; }
+.rag-runs summary { cursor: pointer; font-weight: 700; color: #526159; font-size: 12px; }
+.rag-runs ol { margin: 8px 0 0; padding: 0 0 0 18px; }
+.rag-runs > ol > li { margin-bottom: 14px; padding: 10px 12px; background: #f7f8f7; border: 1px solid #e1e7e3; border-radius: 4px; }
+.rag-runs li pre { max-height: 160px; overflow: auto; margin: 8px 0 0; padding: 8px; background: #fff; border-radius: 3px; font-size: 12px; white-space: pre-wrap; }
+.rag-checks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rag-check { padding: 2px 8px; border-radius: 9px; font-size: 11px; font-weight: 700; }
+.rag-check.ok { color: #1f4f39; background: #e5f3e9; }
+.rag-check.fail { color: #592d25; background: #fff5f2; }
+
 @media (max-width: 760px) {
     .app-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .sidebar { display: grid; grid-template-columns: auto minmax(0, 1fr); padding: 10px 12px; }
