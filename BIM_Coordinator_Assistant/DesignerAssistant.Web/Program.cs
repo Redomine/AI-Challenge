@@ -41,7 +41,13 @@ builder.Services.AddSingleton(sp =>
     var rag = sp.GetRequiredService<RagAnswerService>();
     return new AutoTestRunner(noRag, rag, questionsPath);
 });
-builder.Services.AddSingleton<RagQueryService>();
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<RagOptions>();
+    var rag = sp.GetRequiredService<RagAnswerService>();
+    var noRag = sp.GetRequiredService<NoRagAnswerService>();
+    return new RagQueryService(rag, noRag, options);
+});
 if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != "1")
 {
     builder.Services.AddHostedService(provider => provider.GetRequiredService<ScheduledTaskService>());
@@ -51,21 +57,112 @@ var app = builder.Build();
 if (args is ["--run-rag-eval"])
 {
     var runner = app.Services.GetRequiredService<AutoTestRunner>();
+    var ragOptions = app.Services.GetRequiredService<RagOptions>();
     var cases = await runner.LoadCasesAsync(CancellationToken.None);
-    var report = await runner.RunAsync(cases, null, CancellationToken.None);
+    var aggregate = await runner.RunAggregateAsync(
+        cases,
+        baseline: ragOptions.ToBaselineSettings() with { PostFilterK = ragOptions.TopK },
+        enhanced: ragOptions.ToEnhancedSettings(),
+        includeNoRag: true,
+        progress: null,
+        cancellationToken: CancellationToken.None);
+
+    var settings = new
+    {
+        baseline = new
+        {
+            aggregate.Baseline.RewriteEnabled,
+            aggregate.Baseline.PreFilterK,
+            aggregate.Baseline.ScoreThreshold,
+            aggregate.Baseline.PostFilterK
+        },
+        enhanced = aggregate.Enhanced is null ? null : new
+        {
+            aggregate.Enhanced.RewriteEnabled,
+            aggregate.Enhanced.PreFilterK,
+            aggregate.Enhanced.ScoreThreshold,
+            aggregate.Enhanced.PostFilterK
+        },
+        ragOptions = new
+        {
+            topK = ragOptions.TopK,
+            preFilterK = ragOptions.PreFilterK,
+            postFilterK = ragOptions.PostFilterK,
+            scoreThreshold = ragOptions.ScoreThreshold,
+            rewriteEnabled = ragOptions.RewriteEnabled,
+            embedModel = ragOptions.EmbedModel,
+            indexPath = ragOptions.IndexPath
+        }
+    };
+
     var summary = new
     {
         questions = cases.Count,
-        completed = report.Runs.Count,
-        noRagPassed = report.NoRagRuns.Count(run => run.FactCheckPassed && run.Error is null),
-        ragPassed = report.RagRuns.Count(run => run.FactCheckPassed && run.SourceCheckPassed && run.SectionCheckPassed && run.Error is null),
-        errors = report.WithErrors,
-        report.Error,
-        results = report.Runs.Select(run => new
+        startedAt = aggregate.StartedAt,
+        completedAt = aggregate.CompletedAt,
+        completed = aggregate.Runs.Count,
+        errors = aggregate.Runs.Count(r => r.Error is not null),
+        modes = aggregate.Aggregates.Select(a => new
         {
-            run.Index, run.Mode, run.FactCheckPassed, run.SourceCheckPassed,
-            run.SectionCheckPassed, HasError = run.Error is not null
-        })
+            a.Mode,
+            a.Total,
+            a.Passed,
+            a.WithErrors,
+            a.NegativeTotal,
+            a.NegativePassed,
+            a.AverageRetrieved
+        }),
+        negativeCases = aggregate.NegativeCases.Select(n => new
+        {
+            n.Index, n.Mode, n.Question,
+            n.SearchSucceeded, n.RetrievedCount, n.FactCheckPassed,
+            n.SourceCheckPassed, n.SectionCheckPassed,
+            HasError = n.Error is not null
+        }),
+        aggregate.Error,
+        results = aggregate.Runs.Select(run => new
+        {
+            run.Index,
+            run.Mode,
+            run.Question,
+            expected = new
+            {
+                run.ExpectedSource,
+                run.ExpectedPdfPage,
+                run.ExpectedSectionContains,
+                run.ExpectedNoEvidence
+            },
+            run.SearchSucceeded,
+            run.RetrievedCount,
+            run.FactCheckPassed,
+            run.SourceCheckPassed,
+            run.SectionCheckPassed,
+            run.IsNegativeCase,
+            FoundFactTerms = run.FoundFactTerms.Count,
+            ExpectedFactTerms = run.ExpectedFactTerms.Count,
+            run.Answer,
+            Sources = run.Sources.Select(s => new
+            {
+                s.ChunkId, s.Source, s.Title, s.Section, s.PdfPage, s.Score
+            }),
+            trace = run.Trace is null ? null : new
+            {
+                originalQuestion = run.Trace.OriginalQuestion,
+                searchQuery = run.Trace.SearchQuery,
+                preFilterCount = run.Trace.PreFilterCount,
+                postFilterCount = run.Trace.PostFilterCount,
+                threshold = run.Trace.Threshold,
+                postFilterLimit = run.Trace.PostFilterLimit,
+                preFilterScores = run.Trace.PreFilterScores,
+                rejected = run.Trace.Rejected.Select(r => new
+                {
+                    r.ChunkId, r.Source, r.Title, r.Section, r.PdfPage, r.Score, r.Reason
+                })
+            },
+            HasError = run.Error is not null,
+            run.Error
+        }),
+        settings
     };
     var path = Path.Combine(Path.GetDirectoryName(runner.QuestionsPath)!,
         $"rag-evaluation-{DateTime.Now:yyyyMMdd-HHmmss}.json");

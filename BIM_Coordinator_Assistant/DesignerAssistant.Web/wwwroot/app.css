@@ -185,6 +185,35 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .rag-check.ok { color: #1f4f39; background: #e5f3e9; }
 .rag-check.fail { color: #592d25; background: #fff5f2; }
 
+.rag-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; }
+.rag-controls label { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: #526159; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.rag-controls input[type="number"] { width: 5.5em; min-width: 0; padding: 6px 8px; color: #1d2522; background: #fff; border: 1px solid #bfc9c4; border-radius: 4px; font-variant-numeric: tabular-nums; font-weight: 400; outline: none; }
+.rag-controls input[type="number"]:focus { border-color: #3b7659; box-shadow: 0 0 0 3px rgba(59,118,89,.1); }
+.rag-controls input[type="number"]:invalid,
+.rag-controls input[type="number"].rag-invalid { border-color: #dba99d; box-shadow: 0 0 0 3px rgba(219,169,157,.18); }
+.rag-control-status { margin-left: auto; padding: 3px 8px; border-radius: 9px; font-size: 11px; font-weight: 700; }
+.rag-control-status.ok { color: #1f4f39; background: #e5f3e9; }
+.rag-control-status.fail { color: #592d25; background: #fff5f2; }
+
+.rag-trace { margin-top: 12px; padding: 0; color: #526159; }
+.rag-trace > summary { cursor: pointer; font-size: 12px; font-weight: 700; }
+.rag-trace[open] > summary { margin-bottom: 6px; }
+.rag-trace-list { margin: 8px 0; padding: 0 0 0 18px; color: #45514c; font-size: 12px; line-height: 1.5; }
+.rag-trace-list li { margin-bottom: 5px; overflow-wrap: anywhere; }
+.rag-trace-list code { padding: 1px 5px; background: #f4f6f5; border-radius: 3px; font-family: Consolas, "Courier New", monospace; font-size: 11px; overflow-wrap: anywhere; word-break: break-word; }
+.rag-trace details { margin: 8px 0 0 18px; padding: 0; }
+.rag-trace details summary { cursor: pointer; color: #526159; font-size: 12px; font-weight: 700; }
+.rag-trace details ol { margin: 6px 0 0; padding: 0 0 0 18px; color: #45514c; font-size: 12px; }
+.rag-trace details li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.rag-trace details li code { overflow-wrap: anywhere; word-break: break-word; }
+
+.rag-mode-table { display: table; width: 100%; min-width: 520px; margin: 8px 0 4px; border-collapse: collapse; color: #27322d; font-size: 12px; }
+.rag-mode-table thead th { padding: 8px 10px; color: #45514c; background: #f4f6f5; border-bottom: 1px solid #d9dfdc; text-align: left; font-weight: 700; }
+.rag-mode-table tbody td { padding: 8px 10px; border-bottom: 1px solid #e3e8e5; font-variant-numeric: tabular-nums; }
+.rag-mode-table tbody tr:last-child td { border-bottom: 0; }
+.rag-mode-table tbody td:first-child strong { color: #152019; }
+.rag-mode-table-wrap { overflow-x: auto; margin: 0 -2px; padding: 0 2px; }
+
 @media (max-width: 760px) {
     .app-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .sidebar { display: grid; grid-template-columns: auto minmax(0, 1fr); padding: 10px 12px; }
@@ -210,4 +239,17 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     .revit-list { padding: 16px; }
     .revit-list article { grid-template-columns: 1fr auto; }
     .revit-list article button { grid-column: 1 / -1; }
+    .workspace-header { flex-wrap: wrap; gap: 10px 14px; padding: 12px 16px; }
+    .workspace-header h1 { font-size: 18px; }
+    .rag-layout { padding: 16px; gap: 12px; }
+    .rag-mode-toggle { flex-wrap: wrap; }
+    .rag-mode-option { padding: 5px 9px; font-size: 12px; }
+    .rag-controls { gap: 6px 10px; }
+    .rag-controls label { flex: 1 1 calc(50% - 10px); min-width: 0; white-space: normal; }
+    .rag-controls input[type="number"] { width: 100%; min-width: 0; }
+    .rag-control-status { margin-left: 0; flex: 1 1 100%; }
+    .rag-trace-list, .rag-trace details { margin-left: 14px; }
+    .rag-mode-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .rag-mode-table { display: block; min-width: 540px; overflow-x: auto; -webkit-overflow-scrolling: touch; font-size: 11px; }
+    .rag-mode-table thead, .rag-mode-table tbody { display: table; width: 100%; }
 }

@@ -330,13 +330,13 @@ public sealed class RagServicesTests : IDisposable
     {
         var runs = new List<AutoTestRunResult>
         {
-            new(1, "no-rag", "q", "pdf", null, null, false, 0, Array.Empty<RagSource>(),
+            new(1, "no-rag", "q", "pdf", null, null, false, false, 0, Array.Empty<RagSource>(),
                 "a", new[] { "x" }, new[] { "x" }, true, true, true, null),
-            new(1, "rag", "q", "pdf", null, null, true, 1, new[]
+            new(1, "baseline", "q", "pdf", null, null, false, true, 1, new[]
             {
                 new RagSource("c", "pdf", "T", "S", 1, "x", 0.1f)
             }, "a", new[] { "x" }, new[] { "x" }, true, true, true, null),
-            new(2, "rag", "q", "pdf", null, null, false, 0, Array.Empty<RagSource>(),
+            new(2, "baseline", "q", "pdf", null, null, false, false, 0, Array.Empty<RagSource>(),
                 "a", new[] { "y" }, Array.Empty<string>(), false, false, true, "err"),
         };
         var report = new AutoTestReport(DateTimeOffset.Now, DateTimeOffset.Now, runs, null);
@@ -361,7 +361,7 @@ public sealed class RagServicesTests : IDisposable
             EmbedMaxRetries: 0,
             LlmTimeout: TimeSpan.FromSeconds(1));
         var rag = new RagAnswerService(ragOptions, MakeThrowingEmbeddings(), new StubLlmClient("fallback"));
-        var facade = new RagQueryService(rag, noRag);
+        var facade = new RagQueryService(rag, noRag, ragOptions);
 
         var noRagResult = await facade.QueryAsync("Q", RagMode.NoRag);
         Assert.Equal(RagMode.NoRag, noRagResult.Mode);
@@ -382,11 +382,798 @@ public sealed class RagServicesTests : IDisposable
                 new RagOptions(_tempDir, "http://x", "m", 1, 100, TimeSpan.FromSeconds(1), 0, TimeSpan.FromSeconds(1)),
                 MakeThrowingEmbeddings(),
                 new StubLlmClient("")),
-            new NoRagAnswerService(new StubLlmClient(""), TimeSpan.FromSeconds(1)));
+            new NoRagAnswerService(new StubLlmClient(""), TimeSpan.FromSeconds(1)),
+            new RagOptions(_tempDir, "http://x", "m", 1, 100, TimeSpan.FromSeconds(1), 0, TimeSpan.FromSeconds(1)));
         var result = await facade.QueryAsync("", RagMode.Rag);
         Assert.Equal("Пустой вопрос.", result.Error);
         var noRagResult = await facade.QueryAsync("", RagMode.NoRag);
         Assert.Equal("Пустой вопрос.", noRagResult.Error);
+    }
+
+    // --- Расширенный RAG: переписывание запроса + pre/post фильтр ---
+
+    [Fact]
+    public void RagOptions_RejectsScoreThresholdOutOfRange()
+    {
+        var original = Environment.GetEnvironmentVariable("RAG_SCORE_THRESHOLD");
+        try
+        {
+            Environment.SetEnvironmentVariable("RAG_SCORE_THRESHOLD", "1.5");
+            Assert.Throws<InvalidOperationException>(() => RagOptions.FromEnvironment());
+            Environment.SetEnvironmentVariable("RAG_SCORE_THRESHOLD", "-2");
+            Assert.Throws<InvalidOperationException>(() => RagOptions.FromEnvironment());
+            Environment.SetEnvironmentVariable("RAG_SCORE_THRESHOLD", "abc");
+            Assert.Throws<InvalidOperationException>(() => RagOptions.FromEnvironment());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAG_SCORE_THRESHOLD", original);
+        }
+    }
+
+    [Fact]
+    public void RagOptions_RejectsPostFilterKGreaterThanPreFilterK()
+    {
+        var original = new Dictionary<string, string?>
+        {
+            ["RAG_PRE_FILTER_K"] = Environment.GetEnvironmentVariable("RAG_PRE_FILTER_K"),
+            ["RAG_POST_FILTER_K"] = Environment.GetEnvironmentVariable("RAG_POST_FILTER_K"),
+        };
+        try
+        {
+            Environment.SetEnvironmentVariable("RAG_PRE_FILTER_K", "4");
+            Environment.SetEnvironmentVariable("RAG_POST_FILTER_K", "8");
+            Assert.Throws<InvalidOperationException>(() => RagOptions.FromEnvironment());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAG_PRE_FILTER_K", original["RAG_PRE_FILTER_K"]);
+            Environment.SetEnvironmentVariable("RAG_POST_FILTER_K", original["RAG_POST_FILTER_K"]);
+        }
+    }
+
+    [Fact]
+    public void RagOptions_DefaultsForRagEnhanced()
+    {
+        var original = new Dictionary<string, string?>
+        {
+            ["RAG_REWRITE_ENABLED"] = Environment.GetEnvironmentVariable("RAG_REWRITE_ENABLED"),
+            ["RAG_PRE_FILTER_K"] = Environment.GetEnvironmentVariable("RAG_PRE_FILTER_K"),
+            ["RAG_POST_FILTER_K"] = Environment.GetEnvironmentVariable("RAG_POST_FILTER_K"),
+            ["RAG_SCORE_THRESHOLD"] = Environment.GetEnvironmentVariable("RAG_SCORE_THRESHOLD"),
+        };
+        try
+        {
+            foreach (var key in original.Keys) Environment.SetEnvironmentVariable(key, null);
+            var options = RagOptions.FromEnvironment();
+            Assert.False(options.RewriteEnabled);
+            Assert.Equal(RagOptions.DefaultPreFilterK, options.PreFilterK);
+            Assert.Equal(RagOptions.DefaultPostFilterK, options.PostFilterK);
+            Assert.Equal(RagOptions.DefaultScoreThreshold, options.ScoreThreshold);
+            Assert.Equal(RagOptions.DefaultPostFilterK, options.EffectivePostFilterK);
+        }
+        finally
+        {
+            foreach (var (key, value) in original) Environment.SetEnvironmentVariable(key, value);
+        }
+    }
+
+    [Fact]
+    public async Task RagAnswer_Baseline_UsesOriginalQuestion_NoRewrite()
+    {
+        var indexPath = Path.Combine(_tempDir, "baseline.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность офис 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+            ("c2", "pdf", "Doc", "Эргономика", "высота стола 75 см", 2, MakeVector(vectorDim, 0f, 1f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "baseline-ответ" });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 5, postFilterK: 1);
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Сколько влажность в офисе?", CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.NotNull(result.Trace);
+        Assert.Equal("Сколько влажность в офисе?", result.Trace!.OriginalQuestion);
+        Assert.Equal("Сколько влажность в офисе?", result.Trace.SearchQuery);
+        Assert.Equal(1, result.Trace.PreFilterCount);
+        Assert.Equal(1, result.Trace.PostFilterCount);
+        Assert.Single(result.Sources);
+        Assert.Equal("c1", result.Sources[0].ChunkId);
+        // Один вызов LLM в базовом режиме.
+        Assert.Single(llm.Calls);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Enhanced_RewritesQuery_EmbedsRewritten_AnswersOriginal()
+    {
+        var indexPath = Path.Combine(_tempDir, "enhanced.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+            ("c2", "pdf", "Doc", "Эргономика", "стол 75 см", 2, MakeVector(vectorDim, 0f, 1f)),
+            ("c3", "pdf", "Doc", "Шум", "шум 55 дБ", 3, MakeVector(vectorDim, 0.5f, 0.5f)),
+        });
+
+        // HttpHandler возвращает вектор ТОЛЬКО если в payload указан ожидаемый текст.
+        // Это позволяет проверить, что эмбеддинг считали именно для переписанного запроса.
+        var (http, embeddedTexts) = MakeRecordingEmbeddingHttp(vectorDim, closeTo: MakeVector(vectorDim, 1f, 0f), expectText: "влажность офис");
+        var embeddings = new OllamaEmbeddingsClient(http, TimeSpan.FromSeconds(2), 0);
+        // LLM: первый вызов — переписывание, второй — ответ.
+        var llm = new RecordingLlmClient(new[] { "влажность офис", "enhanced-ответ" });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 6, postFilterK: 3);
+        var optionsEnhanced = options with { RewriteEnabled = true };
+        var service = new RagAnswerService(optionsEnhanced, embeddings, llm);
+
+        var original = "Подскажи, какая влажность должна быть у нас в офисном помещении, согласно нормам?";
+        var result = await service.AskAsync(original, optionsEnhanced.ToEnhancedSettings(), CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.NotNull(result.Trace);
+        Assert.Equal(original, result.Trace!.OriginalQuestion);
+        Assert.Equal("влажность офис", result.Trace.SearchQuery);
+        // Два вызова LLM: rewrite + answer.
+        Assert.Equal(2, llm.Calls.Count);
+        Assert.Equal("enhanced-ответ", result.Answer);
+        // Ответ строится по оригинальному вопросу — он в промпте второго вызова LLM.
+        Assert.Contains(original, llm.Calls[1].UserMessage);
+        // Переписанный поисковый запрос НЕ должен попасть в финальный промпт модели.
+        Assert.DoesNotContain("влажность офис", llm.Calls[1].UserMessage);
+        // Эмбеддинг считали ровно один раз и для переписанного запроса.
+        Assert.Single(embeddedTexts);
+        Assert.Equal("влажность офис", embeddedTexts[0]);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Enhanced_FallsBackToOriginalQuery_OnRewriteFailure()
+    {
+        var indexPath = Path.Combine(_tempDir, "fallback.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+
+        var original = "Сколько влажность в офисе?";
+        var (http, embeddedTexts) = MakeRecordingEmbeddingHttp(vectorDim, closeTo: MakeVector(vectorDim, 1f, 0f), expectText: original);
+        var embeddings = new OllamaEmbeddingsClient(http, TimeSpan.FromSeconds(2), 0);
+        // LLM кидает исключение на любой вызов.
+        var llm = new ThrowOnInstructionsLlmClient("boom-rewrite");
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2) with { RewriteEnabled = true };
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync(original, CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.NotNull(result.Trace);
+        Assert.Equal(original, result.Trace!.SearchQuery);
+        Assert.NotNull(result.Error);
+        Assert.Contains("rewrite", result.Error!, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(embeddedTexts);
+        Assert.Equal(original, embeddedTexts[0]);
+    }
+
+    [Fact]
+    public async Task RagAnswer_AppliesThresholdAndLimit_PopulatesRejections()
+    {
+        var indexPath = Path.Combine(_tempDir, "filter.sqlite3");
+        const int vectorDim = 4;
+        // 4 чанка с разной косинус-близостью к запросу (1, 0.1).
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-top",    "pdf", "D", "S", "top",    1, MakeVector(vectorDim, 1.0f, 0.1f)),
+            ("c-mid",    "pdf", "D", "S", "mid",    2, MakeVector(vectorDim, 0.7f, 0.7f)),
+            ("c-low",    "pdf", "D", "S", "low",    3, MakeVector(vectorDim, 0.1f, 1.0f)),
+            ("c-tiny",   "pdf", "D", "S", "tiny",   4, MakeVector(vectorDim, 0.0f, 0.5f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0.1f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "ok" });
+        // threshold=0.2 чётко отсекает c-tiny (~0.17) по скору, не задевая c-low (~0.23);
+        // post=2 оставляет c-top и c-mid, а c-low отбрасывается по лимиту.
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2)
+            with { ScoreThreshold = 0.2f, RewriteEnabled = true };
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Вопрос", options.ToEnhancedSettings(), CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.NotNull(result.Trace);
+        Assert.Equal(4, result.Trace!.PreFilterCount);
+        Assert.Equal(2, result.Trace.PostFilterCount);
+        Assert.Equal(2, result.Sources.Count);
+        Assert.Equal("c-top", result.Sources[0].ChunkId);
+        Assert.Equal("c-mid", result.Sources[1].ChunkId);
+        // Два отклонённых: c-low — лимит, c-tiny — порог.
+        Assert.Equal(2, result.Trace.Rejected.Count);
+        var byReason = result.Trace.Rejected.ToDictionary(r => r.ChunkId, r => r.Reason);
+        Assert.Contains("лимит", byReason["c-low"], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("threshold", byReason["c-tiny"], StringComparison.OrdinalIgnoreCase);
+        // Скоринговый список из pre-filter содержит все 4 значения в исходном порядке индекса.
+        Assert.Equal(4, result.Trace.PreFilterScores.Count);
+    }
+
+    [Fact]
+    public async Task RagAnswer_EmptyFilteredContext_ProducesEmptySourcesAndFallback()
+    {
+        var indexPath = Path.Combine(_tempDir, "empty.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-low", "pdf", "D", "S", "low", 1, MakeVector(vectorDim, 0.1f, 1.0f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0.1f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "fallback-ответ" });
+        // threshold = 0.9 отсекает единственный кандидат.
+        var options = MakeBaselineOptions(indexPath, preFilterK: 1, postFilterK: 1)
+            with { ScoreThreshold = 0.9f, RewriteEnabled = true };
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Вопрос", options.ToEnhancedSettings(), CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.Empty(result.Sources);
+        Assert.NotNull(result.Trace);
+        Assert.Equal(1, result.Trace!.PreFilterCount);
+        Assert.Equal(0, result.Trace.PostFilterCount);
+        Assert.Single(result.Trace.Rejected);
+        Assert.Contains("threshold", result.Trace.Rejected[0].Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RagAnswer_BuildPrompt_CyrillicLongText_SmallBudget_NoException()
+    {
+        // Регрессионный тест на live-баг: BuildPrompt падал с
+        // "Index and length must refer to a location within the string. (Parameter length)"
+        // при формировании промпта с кириллическим текстом и маленьким MaxContextChars.
+        // Корень — смешение UTF-8 байтов и char-индексов в text[..N].
+        var indexPath = Path.Combine(_tempDir, "cyr.sqlite3");
+        const int vectorDim = 4;
+        // Длинный кириллический текст в каждом из 3 чанков (≈80 символов,
+        // ≈160 байт в UTF-8). Это гарантирует, что старый byte/char микс
+        // приводил к N > text.Length на повторной обрезке.
+        var cyr1 = new string('А', 80); // "ААА...А"
+        var cyr2 = new string('Б', 80); // "БББ...Б"
+        var cyr3 = new string('В', 80); // "ВВВ...В"
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Документ 1", "Микроклимат", cyr1, 1, MakeVector(vectorDim, 1f, 0f)),
+            ("c2", "pdf", "Документ 2", "Эргономика",  cyr2, 2, MakeVector(vectorDim, 0.9f, 0.1f)),
+            ("c3", "pdf", "Документ 3", "Шум",         cyr3, 3, MakeVector(vectorDim, 0.8f, 0.2f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "ok" });
+        // MaxContextChars мал относительно суммы meta+text, чтобы:
+        //  - первый источник прошёл с обрезкой текста (text.Length > budget);
+        //  - второй получил остаток 0 или почти 0;
+        //  - третий гарантированно не влез — должен быть break.
+        const int maxContextChars = 50;
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 3)
+            with { MaxContextChars = maxContextChars };
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Вопрос", CancellationToken.None);
+
+        // Поиск успешен и все три источника возвращены — обрезка касается
+        // только промпта, не результатов поиска.
+        Assert.True(result.SearchSucceeded);
+        Assert.Equal(3, result.Sources.Count);
+        Assert.Single(llm.Calls);
+        var prompt = llm.Calls[0].UserMessage;
+
+        // Считаем фактически записанные в промпт meta+text для каждого
+        // блока вида "[i] source=...\r\n<text>\r\n\r\n". Это ровно та
+        // единица, которую ограничивает MaxContextChars.
+        var written = MeasureSourceBlockChars(prompt, expectedCount: 3);
+        Assert.True(written.BlockCount >= 1, "Должен быть записан хотя бы один источник.");
+        Assert.True(written.TotalMetaPlusText <= maxContextChars,
+            $"Сумма meta+text ({written.TotalMetaPlusText}) превысила MaxContextChars ({maxContextChars}).");
+
+        // Первый источник начался писаться — проверим, что кириллица из него
+        // действительно попала в промпт (а не была проглочена молча).
+        Assert.Contains(cyr1[..20], prompt);
+    }
+
+    /// <summary>
+    /// Извлекает из промпта блоки источников "[i] source=..." и возвращает
+    /// сумму длин meta+text, а также количество найденных блоков.
+    /// </summary>
+    private static (int TotalMetaPlusText, int BlockCount) MeasureSourceBlockChars(
+        string prompt, int expectedCount)
+    {
+        var total = 0;
+        var blocks = 0;
+        for (var i = 0; i < expectedCount; i++)
+        {
+            var header = $"[{i + 1}] source=";
+            var headerIdx = prompt.IndexOf(header, StringComparison.Ordinal);
+            if (headerIdx < 0) break;
+            blocks++;
+            // Найдём конец строки заголовка.
+            var lineEnd = prompt.IndexOf('\n', headerIdx);
+            if (lineEnd < 0) break;
+            var metaLen = lineEnd - headerIdx; // включает ":\r" на Windows, но длина ASCII стабильна
+            // Текст источника идёт до первой пустой строки ("\r\n\r\n" или "\n\n").
+            var textStart = lineEnd + 1;
+            int textEnd;
+            var crlfBlk = prompt.IndexOf("\r\n\r\n", textStart, StringComparison.Ordinal);
+            var lfBlk = prompt.IndexOf("\n\n", textStart, StringComparison.Ordinal);
+            if (crlfBlk >= 0 && (lfBlk < 0 || crlfBlk < lfBlk)) textEnd = crlfBlk;
+            else textEnd = lfBlk;
+            if (textEnd < 0) textEnd = prompt.Length;
+            var textLen = textEnd - textStart;
+            // meta содержит "[i] source=...:\r" — в зачёт берём только "[i] source=...:"
+            // (без CR), плюс сам текст. Это совпадает с headerLen + text.Length в BuildPrompt.
+            var metaOnly = metaLen > 0 && prompt[headerIdx + metaLen - 1] == '\r'
+                ? metaLen - 1
+                : metaLen;
+            total += metaOnly + textLen;
+        }
+        return (total, blocks);
+    }
+
+    [Fact]
+    public async Task RagQueryService_ExposesTrace_OnRagMode()
+    {
+        var indexPath = Path.Combine(_tempDir, "facade.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "D", "S", "top", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "ok" });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2);
+        var facade = new RagQueryService(
+            new RagAnswerService(options, embeddings, llm),
+            new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1)),
+            options);
+
+        var ragResult = await facade.QueryAsync("Вопрос", RagMode.Rag);
+        Assert.NotNull(ragResult.Trace);
+        Assert.Equal(1, ragResult.Trace!.PreFilterCount);
+        Assert.Equal(1, ragResult.Trace.PostFilterCount);
+
+        var noRagResult = await facade.QueryAsync("Вопрос", RagMode.NoRag);
+        Assert.Null(noRagResult.Trace);
+    }
+
+    private RagOptions MakeBaselineOptions(string indexPath, int preFilterK, int postFilterK) =>
+        new(
+            IndexPath: indexPath,
+            OllamaUrl: "http://ollama.local",
+            EmbedModel: "qwen3-embedding:0.6b",
+            TopK: postFilterK,
+            MaxContextChars: 4000,
+            EmbedTimeout: TimeSpan.FromSeconds(2),
+            EmbedMaxRetries: 0,
+            LlmTimeout: TimeSpan.FromSeconds(5),
+            RewriteEnabled: false,
+            RewriteTimeout: TimeSpan.FromSeconds(1),
+            PreFilterK: preFilterK,
+            ScoreThreshold: 0f,
+            PostFilterK: postFilterK);
+
+    // --- Day 23 semantic fixes: baseline score threshold, negative cases, rewrite cancellation ---
+
+    [Fact]
+    public void RagOptions_ToBaselineSettings_HasNoScoreFilter()
+    {
+        // Baseline-режим не должен фильтровать по score — иначе кандидаты
+        // с отрицательной косинус-близостью будут отсечены (валидный
+        // диапазон cosine ∈ [-1, 1]). Используем -1f как «без порога».
+        var options = new RagOptions(
+            IndexPath: Path.Combine(_tempDir, "x.sqlite3"),
+            OllamaUrl: "http://ollama.local",
+            EmbedModel: "qwen3-embedding:0.6b",
+            TopK: 4,
+            MaxContextChars: 1000,
+            EmbedTimeout: TimeSpan.FromSeconds(1),
+            EmbedMaxRetries: 0,
+            LlmTimeout: TimeSpan.FromSeconds(1),
+            RewriteEnabled: true,
+            ScoreThreshold: 0.5f,
+            PostFilterK: 2);
+        var baseline = options.ToBaselineSettings();
+        Assert.False(baseline.RewriteEnabled);
+        Assert.Equal(-1f, baseline.ScoreThreshold);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Baseline_KeepsNegativeCosineCandidate()
+    {
+        // Доказательство, что baseline сохраняет top-K с отрицательным
+        // косинусом. Симулируем индекс, где ближайший чанк имеет
+        // отрицательный скор (противоположно направленный вектор).
+        var indexPath = Path.Combine(_tempDir, "neg.sqlite3");
+        const int vectorDim = 4;
+        // Запрос = (1, 0, 0, 0); ближайший чанк = (-1, 0, 0, 0) → cos = -1.
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("neg", "pdf", "Doc", "Noise", "irrelevant text", 1, MakeVector(vectorDim, -1f, 0f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "baseline-ответ" });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 1, postFilterK: 1);
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Вопрос", CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.NotNull(result.Trace);
+        Assert.Equal(1, result.Trace!.PreFilterCount);
+        Assert.Equal(1, result.Trace.PostFilterCount);
+        Assert.Single(result.Sources);
+        Assert.Equal("neg", result.Sources[0].ChunkId);
+        Assert.True(result.Sources[0].Score < 0f,
+            $"Ожидался отрицательный косинус, получено {result.Sources[0].Score}");
+    }
+
+    [Fact]
+    public async Task AutoTestRunner_PreservesEnhancedTrace_AndNullsForBaselineAndNoRag()
+    {
+        // Day 23: AutoTestRunResult.Trace должен переносить фактический
+        // RagSearchTrace из RagAnswerService для enhanced-прогона, и
+        // оставаться null для baseline и no-rag (поиск не выполнялся).
+        // Доказательство берётся из реального сервиса + эмбеддинга, а
+        // не из заглушки — это требование AGENTS.md о фактических
+        // значениях из тулзов/сервисов.
+        var indexPath = Path.Combine(_tempDir, "trace.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-top", "pdf", "D", "S", "top", 1, MakeVector(vectorDim, 1.0f, 0.1f)),
+            ("c-low", "pdf", "D", "S", "low", 2, MakeVector(vectorDim, 0.1f, 1.0f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0.1f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "baseline-answer", "rewritten", "enhanced-answer" });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2)
+            with { ScoreThreshold = 0.5f, RewriteEnabled = true };
+        var rag = new RagAnswerService(options, embeddings, llm);
+        var noRag = new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1));
+        var runner = new AutoTestRunner(noRag, rag, Path.Combine(_tempDir, "unused.json"));
+
+        var cases = new List<AutoTestCase>
+        {
+            new(
+                Question: "Вопрос",
+                ExpectedSource: "pdf",
+                ExpectedPdfPage: null,
+                ExpectedSectionContains: null,
+                ExpectedFactTerms: Array.Empty<string>(),
+                ExpectedNoEvidence: false),
+        };
+
+        var baselineSettings = options.ToBaselineSettings() with { PostFilterK = options.TopK };
+        var enhancedSettings = options.ToEnhancedSettings();
+        var report = await runner.RunAggregateAsync(
+            cases,
+            baseline: baselineSettings,
+            enhanced: enhancedSettings,
+            includeNoRag: true,
+            progress: null,
+            cancellationToken: CancellationToken.None);
+
+        var byMode = report.Runs.GroupBy(r => r.Mode).ToDictionary(g => g.Key, g => g.Single());
+
+        // no-rag: поиска не было — Trace == null.
+        Assert.Null(byMode["no-rag"].Trace);
+        // baseline: Trace отражает исходный вопрос без переписывания,
+        // SearchQuery == OriginalQuestion, поиск выполнен.
+        var baselineRun = byMode["baseline"];
+        Assert.NotNull(baselineRun.Trace);
+        Assert.Equal("Вопрос", baselineRun.Trace!.OriginalQuestion);
+        Assert.Equal("Вопрос", baselineRun.Trace.SearchQuery);
+        Assert.True(baselineRun.SearchSucceeded);
+        // enhanced: Trace содержит переписанный запрос и фактические скоринговые
+        // данные из RagAnswerService (pre/post counts, rejected).
+        var enhancedRun = byMode["enhanced"];
+        Assert.NotNull(enhancedRun.Trace);
+        Assert.Equal("Вопрос", enhancedRun.Trace!.OriginalQuestion);
+        Assert.Equal("rewritten", enhancedRun.Trace.SearchQuery);
+        Assert.Equal(2, enhancedRun.Trace.PreFilterCount);
+        Assert.True(enhancedRun.Trace.PostFilterCount >= 1);
+        Assert.NotEmpty(enhancedRun.Trace.PreFilterScores);
+        // Отклонение по threshold 0.5: c-low не проходит порог.
+        Assert.Contains(enhancedRun.Trace.Rejected, r => r.ChunkId == "c-low");
+    }
+
+    [Fact]
+    public void AutoTestRunResult_OptionalTrace_DefaultsToNull_ForBackwardCompat()
+    {
+        // Совместимость со старыми позиционными вызовами: 16-й аргумент
+        // (Error) — последний обязательный; 17-й Trace опционален и
+        // по умолчанию null.
+        var result = new AutoTestRunResult(
+            Index: 1,
+            Mode: "baseline",
+            Question: "q",
+            ExpectedSource: "pdf",
+            ExpectedPdfPage: null,
+            ExpectedSectionContains: null,
+            ExpectedNoEvidence: false,
+            SearchSucceeded: true,
+            RetrievedCount: 1,
+            Sources: Array.Empty<RagSource>(),
+            Answer: "a",
+            ExpectedFactTerms: new[] { "x" },
+            FoundFactTerms: new[] { "x" },
+            FactCheckPassed: true,
+            SourceCheckPassed: true,
+            SectionCheckPassed: true,
+            Error: null);
+        Assert.Null(result.Trace);
+    }
+
+    [Fact]
+    public async Task AutoTestRunner_LoadCases_ParsesExpectedNoEvidence()
+    {
+        // Парсинг JSON-флага expected_no_evidence. Должен корректно
+        // различать отсутствие флага (default false), true и false.
+        var jsonPath = Path.Combine(_tempDir, "questions.json");
+        await File.WriteAllTextAsync(jsonPath, """
+            {
+              "questions": [
+                {
+                  "question": "Что-то неизвестное?",
+                  "expected_source": "",
+                  "expected_fact_terms": [],
+                  "expected_no_evidence": true
+                },
+                {
+                  "question": "Обычный вопрос?",
+                  "expected_source": "pdf",
+                  "expected_fact_terms": ["foo"]
+                },
+                {
+                  "question": "Пустой список без флага?",
+                  "expected_source": "pdf",
+                  "expected_fact_terms": []
+                },
+                {
+                  "question": "Явный негатив без терминов?",
+                  "expected_source": "",
+                  "expected_fact_terms": [],
+                  "expected_no_evidence": false
+                }
+              ]
+            }
+            """);
+        var noRag = new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1));
+        var ragOptions = MakeBaselineOptions(
+            Path.Combine(_tempDir, "missing.sqlite3"), preFilterK: 1, postFilterK: 1);
+        var rag = new RagAnswerService(ragOptions, MakeThrowingEmbeddings(), new StubLlmClient("fallback"));
+        var runner = new AutoTestRunner(noRag, rag, jsonPath);
+
+        var cases = await runner.LoadCasesAsync(CancellationToken.None);
+        Assert.Equal(4, cases.Count);
+        Assert.True(cases[0].ExpectedNoEvidence);
+        Assert.False(cases[1].ExpectedNoEvidence);
+        Assert.False(cases[2].ExpectedNoEvidence); // пустой expected_fact_terms без флага — не негатив
+        Assert.False(cases[3].ExpectedNoEvidence); // явный false — не негатив
+    }
+
+    [Fact]
+    public void AutoTestCase_EmptyFactTerms_NotNegative()
+    {
+        // Семантика: пустой ExpectedFactTerms на обычном вопросе НЕ
+        // означает «негативный» кейс. Негатив определяется только явным
+        // флагом ExpectedNoEvidence.
+        var normal = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "pdf",
+            ExpectedPdfPage: 1,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: Array.Empty<string>(),
+            ExpectedNoEvidence: false);
+        Assert.False(normal.ExpectedNoEvidence);
+
+        var explicitNegative = normal with { ExpectedNoEvidence = true };
+        Assert.True(explicitNegative.ExpectedNoEvidence);
+    }
+
+    [Fact]
+    public void AutoTestRunResult_NegativeRag_SpuriousSourceFails()
+    {
+        // Негативный кейс в RAG-режиме должен проваливаться, если
+        // поиск вернул хотя бы один источник — фактическая «ложная
+        // находка» в индексе.
+        var testCase = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "",
+            ExpectedPdfPage: null,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: null,
+            ExpectedNoEvidence: true);
+
+        var spurious = new[]
+        {
+            new RagSource("c1", "pdf", "T", "S", 1, "x", 0.1f),
+        };
+        var result = AutoTestRunnerHelpers.EvaluateRag(
+            testCase,
+            AutoTestRunResult.NoFactsAnswerPhrase,
+            spurious);
+        Assert.True(result.IsNegativeCase);
+        Assert.False(result.Passed,
+            "Негативный RAG с ненулевым Sources должен проваливаться.");
+    }
+
+    [Fact]
+    public void AutoTestRunResult_NegativeRag_EmptySourcesAbstentionPasses()
+    {
+        // Негативный кейс в RAG-режиме проходит, если поиск успешен,
+        // источников нет, и ответ содержит стандартную фразу abstention.
+        var testCase = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "",
+            ExpectedPdfPage: null,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: null,
+            ExpectedNoEvidence: true);
+
+        var result = AutoTestRunnerHelpers.EvaluateRag(
+            testCase,
+            AutoTestRunResult.NoFactsAnswerPhrase,
+            Array.Empty<RagSource>());
+        Assert.True(result.IsNegativeCase);
+        Assert.True(result.Passed);
+    }
+
+    [Fact]
+    public void AutoTestRunResult_NegativeRag_FabricatedFactsFails()
+    {
+        // Негативный кейс в RAG-режиме проваливается, если LLM галлюцинирует
+        // и приводит факты из ExpectedFactTerms.
+        var testCase = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "",
+            ExpectedPdfPage: null,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: new[] { "foo" },
+            ExpectedNoEvidence: true);
+
+        var result = AutoTestRunnerHelpers.EvaluateRag(
+            testCase,
+            "Согласно нормам, foo составляет 45%.",
+            Array.Empty<RagSource>());
+        Assert.True(result.IsNegativeCase);
+        Assert.False(result.Passed,
+            "Негативный RAG с фактами в ответе должен проваливаться.");
+    }
+
+    [Fact]
+    public void AutoTestRunResult_NegativeNoRag_AbstentionPasses()
+    {
+        // Негативный no-rag проходит, если модель воздержалась.
+        var testCase = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "",
+            ExpectedPdfPage: null,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: null,
+            ExpectedNoEvidence: true);
+
+        var result = AutoTestRunnerHelpers.EvaluateNoRag(
+            testCase,
+            AutoTestRunResult.NoFactsAnswerPhrase);
+        Assert.True(result.IsNegativeCase);
+        Assert.True(result.Passed);
+    }
+
+    [Fact]
+    public void AutoTestRunResult_NegativeNoRag_FactsAssertedFails()
+    {
+        // Негативный no-rag проваливается, если модель приводит факты.
+        var testCase = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "",
+            ExpectedPdfPage: null,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: new[] { "влажность" },
+            ExpectedNoEvidence: true);
+
+        var result = AutoTestRunnerHelpers.EvaluateNoRag(
+            testCase,
+            "Влажность в офисе 45%.");
+        Assert.True(result.IsNegativeCase);
+        Assert.False(result.Passed);
+    }
+
+    [Fact]
+    public void AutoTestRunResult_NormalEmptyTerms_FactsFound_Fails()
+    {
+        // Нормальный (не-негативный) вопрос с пустым ExpectedFactTerms
+        // не становится негативным и должен проваливаться, если в ответе
+        // есть контент (текущее поведение count == 0 → facts == 0).
+        var testCase = new AutoTestCase(
+            Question: "Q",
+            ExpectedSource: "pdf",
+            ExpectedPdfPage: 1,
+            ExpectedSectionContains: null,
+            ExpectedFactTerms: Array.Empty<string>(),
+            ExpectedNoEvidence: false);
+
+        var result = AutoTestRunnerHelpers.EvaluateNoRag(testCase, "любой текст");
+        Assert.False(result.IsNegativeCase);
+        Assert.False(result.Passed);
+    }
+
+    [Fact]
+    public async Task RagAnswer_RewriteCancellation_PropagatesOperationCanceled()
+    {
+        // Отмена пользователя во время переписывания должна
+        // пробрасываться как OperationCanceledException, а не
+        // тихо подменяться фоллбэком на оригинальный вопрос.
+        var indexPath = Path.Combine(_tempDir, "cancel.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "S", "t", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        // LLM зависает до отмены пользователя.
+        var llm = new DelayedLlmClient(TimeSpan.FromSeconds(30));
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2) with { RewriteEnabled = true };
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        using var cts = new CancellationTokenSource();
+        var askTask = service.AskAsync("Вопрос", options.ToEnhancedSettings(), cts.Token);
+        // Дать LLM время стартовать.
+        await Task.Delay(50);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => askTask);
+    }
+
+    private static HttpClient MakeEmbeddingHttpForQuery(float[] expectedVector)
+    {
+        return new HttpClient(new StubHttpHandler(_ => HttpResponseFacts.Json(
+            HttpStatusCode.OK,
+            new { embeddings = new[] { expectedVector } })))
+        {
+            BaseAddress = new Uri("http://ollama.local"),
+        };
+    }
+
+    /// <summary>
+    /// HttpHandler для OllamaEmbeddingsClient, который возвращает успешный
+    /// ответ ТОЛЬКО если текст в payload совпадает с <paramref name="expectText"/>.
+    /// Иначе — 400. Записывает все присланные тексты в <c>embeddedTexts</c>.
+    /// </summary>
+    private static (HttpClient Http, List<string> EmbeddedTexts) MakeRecordingEmbeddingHttp(
+        int vectorDim, float[] closeTo, string expectText)
+    {
+        var embedded = new List<string>();
+        var handler = new RecordingEmbeddingHandler(embedded, expectText, closeTo);
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://ollama.local") };
+        return (http, embedded);
     }
 
     private static OllamaEmbeddingsClient MakeThrowingEmbeddings()
@@ -481,6 +1268,42 @@ public sealed class RagServicesTests : IDisposable
             => Task.FromResult(new LlmResponse(_reply, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, false)));
     }
 
+    private sealed record LlmCall(string Instructions, string UserMessage);
+
+    /// <summary>Возвращает заранее заданные ответы по очереди и запоминает все вызовы.</summary>
+    private sealed class RecordingLlmClient : ILlmClient
+    {
+        private readonly Queue<string> _replies;
+        public List<LlmCall> Calls { get; } = new();
+
+        public RecordingLlmClient(IEnumerable<string> replies)
+        {
+            _replies = new Queue<string>(replies);
+        }
+
+        public Task<TokenCountResult> CountTextTokensAsync(IReadOnlyCollection<string> texts, CancellationToken cancellationToken = default)
+            => Task.FromResult(new TokenCountResult(0, false));
+
+        public Task<LlmResponse> GenerateAsync(string instructions, IReadOnlyCollection<ChatMessage> messages, CancellationToken cancellationToken = default)
+        {
+            var user = messages.LastOrDefault()?.Content ?? "";
+            Calls.Add(new LlmCall(instructions, user));
+            var reply = _replies.Count > 0 ? _replies.Dequeue() : "";
+            return Task.FromResult(new LlmResponse(reply, "stop", new TokenUsage(0, 0, 0, 0, 0, 0, 0, false)));
+        }
+    }
+
+    /// <summary>Кидает исключение на любой вызов LLM, чтобы проверить фоллбэк.</summary>
+    private sealed class ThrowOnInstructionsLlmClient : ILlmClient
+    {
+        private readonly string _message;
+        public ThrowOnInstructionsLlmClient(string message) => _message = message;
+        public Task<TokenCountResult> CountTextTokensAsync(IReadOnlyCollection<string> texts, CancellationToken cancellationToken = default)
+            => Task.FromResult(new TokenCountResult(0, false));
+        public Task<LlmResponse> GenerateAsync(string instructions, IReadOnlyCollection<ChatMessage> messages, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException(_message);
+    }
+
     private sealed class ThrowingLlmClient : ILlmClient
     {
         public Task<TokenCountResult> CountTextTokensAsync(IReadOnlyCollection<string> texts, CancellationToken cancellationToken = default)
@@ -508,6 +1331,53 @@ public sealed class RagServicesTests : IDisposable
         public StubHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(_handler(request));
+    }
+
+    /// <summary>
+    /// Читает тело POST /api/embed, достаёт первый input-текст и сравнивает с ожидаемым.
+    /// Если совпадает — отвечает 200 с вектором, иначе — 400, чтобы эмбеддинг не прошёл.
+    /// </summary>
+    private sealed class RecordingEmbeddingHandler : HttpMessageHandler
+    {
+        private readonly List<string> _recorded;
+        private readonly string _expected;
+        private readonly float[] _vector;
+
+        public RecordingEmbeddingHandler(List<string> recorded, string expected, float[] vector)
+        {
+            _recorded = recorded;
+            _expected = expected;
+            _vector = vector;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+            string? firstInput = null;
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("input", out var input) &&
+                    input.ValueKind == JsonValueKind.Array && input.GetArrayLength() > 0)
+                {
+                    firstInput = input[0].GetString();
+                }
+            }
+            catch
+            {
+                // не JSON — трактуем как провал
+            }
+
+            if (firstInput is not null)
+            {
+                _recorded.Add(firstInput);
+                if (firstInput == _expected)
+                {
+                    return HttpResponseFacts.Json(HttpStatusCode.OK, new { embeddings = new[] { _vector } });
+                }
+            }
+            return HttpResponseFacts.Json(HttpStatusCode.BadRequest, new { error = $"ожидался текст '{_expected}', получен '{firstInput}'" });
+        }
     }
 }
 
@@ -537,6 +1407,7 @@ internal static class AutoTestRunnerHelpers
             ExpectedSource: testCase.ExpectedSource,
             ExpectedPdfPage: testCase.ExpectedPdfPage,
             ExpectedSectionContains: testCase.ExpectedSectionContains,
+            ExpectedNoEvidence: testCase.ExpectedNoEvidence,
             SearchSucceeded: false,
             RetrievedCount: 0,
             Sources: sources,
@@ -553,6 +1424,10 @@ internal static class AutoTestRunnerHelpers
     public static AutoTestRunResult EvaluateRag(AutoTestCase testCase, string answer, IReadOnlyList<RagSource> sources)
     {
         var facts = InvokeEvaluateFactTerms(answer, testCase.ExpectedFactTerms);
+        // SearchSucceeded моделирует фактическое поведение RagAnswerService:
+        // поиск успешен, если индекс открыт и вернул результат без ошибок —
+        // в т.ч. когда результаты пустые (валидный «нет находок»).
+        var searchSucceeded = true;
         return new AutoTestRunResult(
             Index: 0,
             Mode: "rag",
@@ -560,7 +1435,8 @@ internal static class AutoTestRunnerHelpers
             ExpectedSource: testCase.ExpectedSource,
             ExpectedPdfPage: testCase.ExpectedPdfPage,
             ExpectedSectionContains: testCase.ExpectedSectionContains,
-            SearchSucceeded: sources.Count > 0,
+            ExpectedNoEvidence: testCase.ExpectedNoEvidence,
+            SearchSucceeded: searchSucceeded,
             RetrievedCount: sources.Count,
             Sources: sources,
             Answer: answer,
