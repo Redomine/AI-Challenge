@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Optional
 
 DEFAULT_CONFLUENCE_JSON = Path("input/confluence.json")
+# Дополнительный путь к Confluence HTML-выгрузке (``view``, сохранённой
+# через браузер). Этот источник опционален: если файла нет, ingest
+# просто пропускает этот шаг, и итоговый корпус строится из
+# ``confluence.json`` + ``document.pdf`` без потерь.
+DEFAULT_CONFLUENCE_HTML = Path("input/confluence.html")
 DEFAULT_PDF_PATH = Path("input/document.pdf")
 DEFAULT_OUTPUT_DIR = Path("index_out")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
@@ -44,6 +49,11 @@ class RunConfig:
     embed_max_retries: int
     embed_retry_base_delay: float
     embed_timeout: float
+    # Опциональная HTML-выгрузка Confluence. ``None`` означает, что
+    # этот источник не используется (обратная совместимость со
+    # старыми скриптами и тестами, которые не передают
+    # ``--confluence-html``).
+    confluence_html: Optional[Path] = None
 
     def fixed_db(self) -> Path:
         """Путь к SQLite-индексу стратегии fixed."""
@@ -72,13 +82,22 @@ def build_config_from_args(args: argparse.Namespace) -> RunConfig:
     Аргументы читаются по принципу «есть значение — берём его, иначе дефолт».
     Это позволяет переиспользовать одну и ту же фабрику для команд
     ``build``, ``query`` и ``compare``.
+
+    Поле ``confluence_html`` опционально: ``None``/пустая строка →
+    HTML-выгрузка не используется, что сохраняет обратную
+    совместимость со старыми скриптами и тестами, которые не
+    передают ``--confluence-html``.
     """
 
     def _opt(name: str, default):
         return getattr(args, name, default)
 
+    confluence_html = _opt("confluence_html", None)
+    if isinstance(confluence_html, str):
+        confluence_html = confluence_html.strip() or None
     return RunConfig(
         confluence_json=Path(_opt("confluence_json", DEFAULT_CONFLUENCE_JSON)),
+        confluence_html=Path(confluence_html) if confluence_html else None,
         pdf_path=Path(_opt("pdf_path", DEFAULT_PDF_PATH)),
         output_dir=Path(_opt("output_dir", DEFAULT_OUTPUT_DIR)),
         ollama_url=_opt("ollama_url", DEFAULT_OLLAMA_URL),
@@ -101,6 +120,16 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--confluence-json",
         default=str(DEFAULT_CONFLUENCE_JSON),
         help="Путь к JSON-выгрузке страницы Confluence REST API.",
+    )
+    parser.add_argument(
+        "--confluence-html",
+        dest="confluence_html",
+        default=str(DEFAULT_CONFLUENCE_HTML),
+        help=(
+            "Путь к HTML-выгрузке Confluence (view, сохранённой "
+            "через браузер). Опционально: если файла нет, этот "
+            "источник пропускается без ошибок."
+        ),
     )
     parser.add_argument(
         "--pdf",
@@ -144,6 +173,7 @@ def add_chunking_arguments(parser: argparse.ArgumentParser) -> None:
 
 __all__ = [
     "DEFAULT_CONFLUENCE_JSON",
+    "DEFAULT_CONFLUENCE_HTML",
     "DEFAULT_PDF_PATH",
     "DEFAULT_OUTPUT_DIR",
     "DEFAULT_OLLAMA_URL",

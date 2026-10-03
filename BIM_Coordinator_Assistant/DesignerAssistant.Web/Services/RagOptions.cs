@@ -34,18 +34,35 @@ public sealed record RagOptions(
             : TimeSpan.FromSeconds(DefaultRewriteTimeoutSeconds);
 
     /// <summary>
-    /// Настройки baseline-прогона: оригинальный вопрос, TopK, без
-    /// переписывания и без score-порога. ScoreThreshold=-1f означает
-    /// «не фильтровать по порогу» — сохраняем оригинальную top-K по
-    /// косинусу, включая отрицательные оценки (валидный диапазон
-    /// cosine ∈ [-1, 1]). Делегирует существующему конструктору без
-    /// побочных эффектов.
+    /// Настройки baseline-прогона (legacy, для comparison-режима День 23):
+    /// оригинальный вопрос, TopK, без переписывания и без score-порога.
+    /// ScoreThreshold=-1f означает «не фильтровать по порогу» —
+    /// сохраняем оригинальную top-K по косинусу, включая отрицательные
+    /// оценки (валидный диапазон cosine ∈ [-1, 1]). Делегирует
+    /// существующему конструктору без побочных эффектов.
     /// </summary>
     public RagRunSettings ToBaselineSettings() => new(
         RewriteEnabled: false,
         PreFilterK: TopK,
         ScoreThreshold: -1f,
         PostFilterK: TopK,
+        RewriteTimeout: EffectiveRewriteTimeout);
+
+    /// <summary>
+    /// Настройки для production-чата (День 24): без переписывания,
+    /// TopK, с score-порогом из <see cref="ScoreThreshold"/>. Чат
+    /// не отвечает на слабом контексте: кандидаты ниже порога
+    /// отбрасываются, при пустом post-filter — «Не знаю». Используется
+    /// по умолчанию для <see cref="RagMode.Rag"/>, чтобы продовый чат
+    /// никогда не отвечал по слабому контексту. Comparison-режим
+    /// продолжает использовать <see cref="ToBaselineSettings"/> для
+    /// legacy-baseline.
+    /// </summary>
+    public RagRunSettings ToProductionSettings() => new(
+        RewriteEnabled: false,
+        PreFilterK: PreFilterK,
+        ScoreThreshold: ScoreThreshold,
+        PostFilterK: Math.Min(EffectivePostFilterK, PreFilterK),
         RewriteTimeout: EffectiveRewriteTimeout);
 
     /// <summary>

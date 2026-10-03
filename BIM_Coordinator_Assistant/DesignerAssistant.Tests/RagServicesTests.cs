@@ -506,8 +506,14 @@ public sealed class RagServicesTests : IDisposable
         // Это позволяет проверить, что эмбеддинг считали именно для переписанного запроса.
         var (http, embeddedTexts) = MakeRecordingEmbeddingHttp(vectorDim, closeTo: MakeVector(vectorDim, 1f, 0f), expectText: "влажность офис");
         var embeddings = new OllamaEmbeddingsClient(http, TimeSpan.FromSeconds(2), 0);
-        // LLM: первый вызов — переписывание, второй — ответ.
-        var llm = new RecordingLlmClient(new[] { "влажность офис", "enhanced-ответ" });
+        // LLM: первый вызов — переписывание, второй — ответ в формате ANSWER + QUOTES.
+        // Структурированный ответ требуется на День 24: модель обязана
+        // выдать цитату с дословным фрагментом из контекста.
+        var llm = new RecordingLlmClient(new[]
+        {
+            "влажность офис",
+            "ANSWER: влажность 45%\nQUOTES:\n[c1] source=pdf section=\"Микроклимат\" pdf_page=1 quote=\"влажность 45%\"\n",
+        });
         var options = MakeBaselineOptions(indexPath, preFilterK: 6, postFilterK: 3);
         var optionsEnhanced = options with { RewriteEnabled = true };
         var service = new RagAnswerService(optionsEnhanced, embeddings, llm);
@@ -521,7 +527,7 @@ public sealed class RagServicesTests : IDisposable
         Assert.Equal("влажность офис", result.Trace.SearchQuery);
         // Два вызова LLM: rewrite + answer.
         Assert.Equal(2, llm.Calls.Count);
-        Assert.Equal("enhanced-ответ", result.Answer);
+        Assert.Equal("влажность 45%", result.Answer);
         // Ответ строится по оригинальному вопросу — он в промпте второго вызова LLM.
         Assert.Contains(original, llm.Calls[1].UserMessage);
         // Переписанный поисковый запрос НЕ должен попасть в финальный промпт модели.
@@ -662,7 +668,9 @@ public sealed class RagServicesTests : IDisposable
         //  - первый источник прошёл с обрезкой текста (text.Length > budget);
         //  - второй получил остаток 0 или почти 0;
         //  - третий гарантированно не влез — должен быть break.
-        const int maxContextChars = 50;
+        // День 24: meta-строка длиннее (chunk_id/section/title), поэтому
+        // бюджет увеличен, но по-прежнему гарантирует обрезку.
+        const int maxContextChars = 130;
         var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 3)
             with { MaxContextChars = maxContextChars };
         var service = new RagAnswerService(options, embeddings, llm);
@@ -1378,6 +1386,639 @@ public sealed class RagServicesTests : IDisposable
             }
             return HttpResponseFacts.Json(HttpStatusCode.BadRequest, new { error = $"ожидался текст '{_expected}', получен '{firstInput}'" });
         }
+    }
+
+    // ===== День 24: structured citations, abstention «Не знаю», production-настройки =====
+
+    [Fact]
+    public void RagCitationParser_ParsesStructuredAnswer()
+    {
+        var raw = """
+            ANSWER: Влажность 45%.
+            QUOTES:
+            [c1] source=pdf section="Микроклимат" pdf_page=3 quote="Влажность 45%."
+            [c2] source=confluence section="Климат" pdf_page=- quote="Норма 30-60%"
+            """;
+        var parsed = RagCitationParser.Parse(raw);
+        Assert.True(parsed.HasStructuredOutput);
+        Assert.Equal("Влажность 45%.", parsed.CleanAnswer);
+        Assert.Equal(2, parsed.Citations.Count);
+        Assert.Equal("c1", parsed.Citations[0].ChunkId);
+        Assert.Equal("Микроклимат", parsed.Citations[0].Section);
+        Assert.Equal(3, parsed.Citations[0].PdfPage);
+        Assert.Equal("Влажность 45%.", parsed.Citations[0].Quote);
+        Assert.Equal("confluence", parsed.Citations[1].Source);
+        Assert.Null(parsed.Citations[1].PdfPage);
+    }
+
+    [Fact]
+    public void RagCitationParser_ValidatesQuotesAgainstSources()
+    {
+        var raw = """
+            ANSWER: Влажность 45%.
+            QUOTES:
+            [c1] source=pdf section="Микроклимат" pdf_page=3 quote="влажность офис 45%"
+            [c-fake] source=pdf section="X" pdf_page=1 quote="несуществующий"
+            """;
+        var sources = new[]
+        {
+            new RagSource("c1", "pdf", "Doc", "Микроклимат", 3, "влажность офис 45%", 0.9f),
+            new RagSource("c2", "pdf", "Doc", "Шум", 5, "55 дБ", 0.4f),
+        };
+        var validated = RagCitationParser.ValidateAgainstSources(
+            RagCitationParser.Parse(raw), sources);
+        Assert.True(validated.HasAnyVerifiedCitation);
+        Assert.Equal(2, validated.Citations.Count);
+        Assert.True(validated.Citations[0].Verified);
+        Assert.False(validated.Citations[1].Verified);
+    }
+
+    [Fact]
+    public void RagCitationParser_RejectsQuotesNotInSource()
+    {
+        var raw = """
+            ANSWER: Текст.
+            QUOTES:
+            [c1] source=pdf section="X" pdf_page=1 quote="Совершенно другой текст"
+            """;
+        var sources = new[]
+        {
+            new RagSource("c1", "pdf", "Doc", "X", 1, "Содержимое чанка", 0.9f),
+        };
+        var validated = RagCitationParser.ValidateAgainstSources(
+            RagCitationParser.Parse(raw), sources);
+        Assert.False(validated.HasAnyVerifiedCitation);
+    }
+
+    [Fact]
+    public void RagCitationParser_AnswerSupportedByQuotes()
+    {
+        var verified = new[]
+        {
+            new RagCitation("c1", "pdf", "S", 1, "влажность 45%", true),
+        };
+        Assert.True(RagCitationParser.AnswerSupportedByQuotes("влажность 45%", verified));
+        Assert.False(RagCitationParser.AnswerSupportedByQuotes("высота стола 75 см", verified));
+        // Пустой ответ не содержит подтверждённого утверждения.
+        Assert.False(RagCitationParser.AnswerSupportedByQuotes("", verified));
+        // Пустые цитаты — не поддержано.
+        Assert.False(RagCitationParser.AnswerSupportedByQuotes("влажность 45%", Array.Empty<RagCitation>()));
+    }
+
+    [Fact]
+    public void RagCitationParser_ParseRejectsLinesWithoutChunkId()
+    {
+        var raw = """
+            ANSWER: Текст.
+            QUOTES:
+            source=pdf section="X" pdf_page=1 quote="no chunk id"
+            """;
+        var parsed = RagCitationParser.Parse(raw);
+        Assert.Empty(parsed.Citations);
+    }
+
+    [Fact]
+    public void RagCitationParser_ParseHandlesQuotedValuesWithSpaces()
+    {
+        var raw = """
+            ANSWER: Текст
+            QUOTES:
+            [c1] source=pdf section="Раздел с пробелами" pdf_page=2 quote="дословная цитата с пробелами"
+            """;
+        var parsed = RagCitationParser.Parse(raw);
+        Assert.Single(parsed.Citations);
+        Assert.Equal("Раздел с пробелами", parsed.Citations[0].Section);
+        Assert.Equal("дословная цитата с пробелами", parsed.Citations[0].Quote);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Day24_StructuredAnswer_HappyPath()
+    {
+        var indexPath = Path.Combine(_tempDir, "d24-happy.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность офис 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        // LLM выдаёт структурированный ответ с цитатой.
+        var structured = """
+            ANSWER: Влажность 45%.
+            QUOTES:
+            [c1] source=pdf section="Микроклимат" pdf_page=1 quote="влажность офис 45%"
+            """;
+        var llm = new RecordingLlmClient(new[] { structured });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2);
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Какая влажность в офисе?", CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.False(result.Abstained);
+        Assert.Equal(RagAbstentionReason.None, result.AbstentionReason);
+        Assert.Equal("Влажность 45%.", result.Answer);
+        Assert.NotNull(result.Citations);
+        Assert.Single(result.Citations!);
+        Assert.True(result.Citations![0].Verified);
+        Assert.Null(result.Error);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Day24_NoEvidence_AbstainsWithRussianPhrase()
+    {
+        var indexPath = Path.Combine(_tempDir, "d24-noev.sqlite3");
+        const int vectorDim = 4;
+        // Кандидат с отрицательным косинусом к запросу (1,0,0,0). При
+        // production-настройках с порогом 0.9 отбрасывается → NoEvidence.
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-low", "pdf", "Doc", "Шум", "55 дБ", 1, MakeVector(vectorDim, -1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        // LLM не должен вызываться: после порога кандидатов нет.
+        var llm = new ThrowOnInstructionsLlmClient("LLM не должен вызываться");
+        var options = MakeBaselineOptions(indexPath, preFilterK: 1, postFilterK: 1)
+            with { ScoreThreshold = 0.9f };
+        var service = new RagAnswerService(options, embeddings, llm);
+        // Передаём production-настройки с порогом явно.
+        var production = options.ToProductionSettings();
+
+        var result = await service.AskAsync(
+            "Какая влажность в офисе?", production, CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.Empty(result.Sources);
+        Assert.True(result.Abstained);
+        Assert.Equal(RagAbstentionReason.NoEvidence, result.AbstentionReason);
+        Assert.Equal(RagAbstentionMessages.Russian, result.Answer);
+        Assert.NotNull(result.ClarificationQuestion);
+        Assert.Null(result.Error);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Day24_SearchError_AbstainsAsSearchError()
+    {
+        var indexPath = Path.Combine(_tempDir, "absent.sqlite3");
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(new float[0]),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new ThrowOnInstructionsLlmClient("LLM не должен вызываться");
+        var options = new RagOptions(
+            IndexPath: indexPath,
+            OllamaUrl: "http://ollama.local",
+            EmbedModel: "qwen3-embedding:0.6b",
+            TopK: 2,
+            MaxContextChars: 1000,
+            EmbedTimeout: TimeSpan.FromSeconds(1),
+            EmbedMaxRetries: 0,
+            LlmTimeout: TimeSpan.FromSeconds(1));
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Любой вопрос", CancellationToken.None);
+
+        Assert.False(result.SearchSucceeded);
+        Assert.True(result.Abstained);
+        Assert.Equal(RagAbstentionReason.SearchError, result.AbstentionReason);
+        Assert.Equal(RagAbstentionMessages.Russian, result.Answer);
+        Assert.NotNull(result.Error);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Day24_FabricatedQuote_AbstainsAsUnsupportedAnswer()
+    {
+        var indexPath = Path.Combine(_tempDir, "d24-fake.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность офис 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        // LLM выдаёт цитату, которой нет в источнике, и ответ, не
+        // подтверждённый цитатами. Сервис обязан abstentionить.
+        var fake = """
+            ANSWER: Влажность 99%.
+            QUOTES:
+            [c1] source=pdf section="Микроклимат" pdf_page=1 quote="совершенно другой текст"
+            """;
+        var llm = new RecordingLlmClient(new[] { fake });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 2, postFilterK: 2);
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Какая влажность?", CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.Single(result.Sources);
+        Assert.True(result.Abstained);
+        Assert.Equal(RagAbstentionReason.UnsupportedAnswer, result.AbstentionReason);
+        Assert.Equal(RagAbstentionMessages.Russian, result.Answer);
+        Assert.NotNull(result.Citations);
+        Assert.Single(result.Citations!);
+        Assert.False(result.Citations![0].Verified);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Day24_LlmError_AbstainsAsLlmError()
+    {
+        var indexPath = Path.Combine(_tempDir, "d24-llm.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность офис 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new ThrowOnInstructionsLlmClient("boom");
+        var options = MakeBaselineOptions(indexPath, preFilterK: 2, postFilterK: 2);
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Какая влажность?", CancellationToken.None);
+
+        Assert.True(result.SearchSucceeded);
+        Assert.True(result.Abstained);
+        Assert.Equal(RagAbstentionReason.LlmError, result.AbstentionReason);
+        Assert.Equal(RagAbstentionMessages.Russian, result.Answer);
+        Assert.NotNull(result.Error);
+        Assert.Contains("boom", result.Error!);
+    }
+
+    [Fact]
+    public async Task RagAnswer_Day24_AnswerSupportedByVerifiedQuotes()
+    {
+        var indexPath = Path.Combine(_tempDir, "d24-support.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность 45 процентов", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        // Ответ использует термин из цитаты → поддержан.
+        var structured = """
+            ANSWER: влажность 45 процентов.
+            QUOTES:
+            [c1] source=pdf section="Микроклимат" pdf_page=1 quote="влажность 45 процентов"
+            """;
+        var llm = new RecordingLlmClient(new[] { structured });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 2, postFilterK: 2);
+        var service = new RagAnswerService(options, embeddings, llm);
+
+        var result = await service.AskAsync("Какая влажность?", CancellationToken.None);
+
+        Assert.False(result.Abstained);
+        Assert.True(result.Citations![0].Verified);
+        Assert.NotEmpty(result.Citations!);
+    }
+
+    [Fact]
+    public void RagOptions_ProductionSettings_HasThresholdFromOptions()
+    {
+        // День 24: production-настройки для чата используют score threshold,
+        // чтобы продовый чат не отвечал на слабом контексте.
+        var options = new RagOptions(
+            IndexPath: Path.Combine(_tempDir, "x.sqlite3"),
+            OllamaUrl: "http://x",
+            EmbedModel: "m",
+            TopK: 4,
+            MaxContextChars: 1000,
+            EmbedTimeout: TimeSpan.FromSeconds(1),
+            EmbedMaxRetries: 0,
+            LlmTimeout: TimeSpan.FromSeconds(1),
+            RewriteEnabled: false,
+            ScoreThreshold: 0.65f,
+            PreFilterK: 8,
+            PostFilterK: 4);
+        var production = options.ToProductionSettings();
+        Assert.False(production.RewriteEnabled);
+        Assert.Equal(0.65f, production.ScoreThreshold);
+        Assert.Equal(8, production.PreFilterK);
+        Assert.Equal(4, production.PostFilterK);
+
+        // legacy-baseline остаётся без threshold.
+        var legacy = options.ToBaselineSettings();
+        Assert.Equal(-1f, legacy.ScoreThreshold);
+        Assert.Equal(4, legacy.PreFilterK); // legacy → TopK
+    }
+
+    [Fact]
+    public async Task RagQueryService_DefaultForRag_UsesThreshold()
+    {
+        // Прод-режим (RagMode.Rag) использует ToProductionSettings, чтобы
+        // чат не отвечал по слабому контексту.
+        var indexPath = Path.Combine(_tempDir, "facade-prod.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-low", "pdf", "Doc", "S", "шум", 1, MakeVector(vectorDim, 0.1f, 1f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[] { "ok" });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2)
+            with { ScoreThreshold = 0.9f };
+        var facade = new RagQueryService(
+            new RagAnswerService(options, embeddings, llm),
+            new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1)),
+            options);
+
+        var result = await facade.QueryAsync("Вопрос", RagMode.Rag);
+        Assert.True(result.Abstained);
+        Assert.Equal(RagAbstentionReason.NoEvidence, result.AbstentionReason);
+        Assert.Equal(0.9f, result.Settings!.ScoreThreshold);
+    }
+
+    [Fact]
+    public async Task RagQueryService_LegacyBaseline_KeepsNoThreshold()
+    {
+        // Comparison-режим использует legacy-baseline без threshold.
+        var indexPath = Path.Combine(_tempDir, "facade-legacy.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-neg", "pdf", "Doc", "Noise", "irrelevant", 1, MakeVector(vectorDim, -1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[]
+        {
+            """
+            ANSWER: irrelevant
+            QUOTES:
+            [c-neg] source=pdf section="Noise" pdf_page=1 quote="irrelevant"
+            """,
+        });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 1, postFilterK: 1)
+            with { ScoreThreshold = 0.99f };
+        var facade = new RagQueryService(
+            new RagAnswerService(options, embeddings, llm),
+            new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1)),
+            options);
+
+        var legacy = facade.LegacyBaselineSettings();
+        Assert.Equal(-1f, legacy.ScoreThreshold);
+        var result = await facade.QueryAsync("Вопрос", RagMode.Rag, legacy);
+        // Legacy-baseline сохраняет отрицательный косинус-кандидат и не abstentionит.
+        Assert.False(result.Abstained);
+        Assert.Equal(1, result.RetrievedCount);
+        Assert.Equal(-1f, result.Settings!.ScoreThreshold);
+    }
+
+    [Fact]
+    public void RagCitation_Reference_FormatsSourceAndPage()
+    {
+        var pdf = new RagCitation("c1", "pdf", "S", 5, "q", true);
+        Assert.Equal("[pdf, стр. 5, c1]", pdf.Reference);
+        var conf = new RagCitation("c1", "confluence", "S", null, "q", true);
+        Assert.Equal("[confluence, c1]", conf.Reference);
+    }
+
+    [Fact]
+    public void RagAbstentionMessages_AreStable()
+    {
+        // Стандартные тексты abstention не должны меняться — UI и
+        // автотест опираются на дословные строки.
+        Assert.Equal("Не знаю", RagAbstentionMessages.Russian);
+        Assert.False(string.IsNullOrWhiteSpace(RagAbstentionMessages.DefaultClarification));
+    }
+
+    [Fact]
+    public void AutoTestRunResult_QuotesAcceptance_DefaultsFalse()
+    {
+        // Обратная совместимость: новые поля имеют дефолт false.
+        var r = new AutoTestRunResult(
+            Index: 1, Mode: "x", Question: "q",
+            ExpectedSource: "", ExpectedPdfPage: null, ExpectedSectionContains: null,
+            ExpectedNoEvidence: false,
+            SearchSucceeded: true, RetrievedCount: 1, Sources: Array.Empty<RagSource>(),
+            Answer: "a", ExpectedFactTerms: Array.Empty<string>(),
+            FoundFactTerms: Array.Empty<string>(),
+            FactCheckPassed: true, SourceCheckPassed: true, SectionCheckPassed: true,
+            Error: null);
+        Assert.False(r.QuoteCheckPassed);
+        Assert.False(r.AnswerSupportedByQuotes);
+        Assert.False(r.Abstained);
+        Assert.Equal(RagAbstentionReason.None, r.AbstentionReason);
+        Assert.Empty(r.CitationsSafe);
+    }
+
+    [Fact]
+    public void AutoTestRunResult_Day24AbstentionPhrase_InIsAbstentionAnswer()
+    {
+        // IsAbstentionAnswer должен учитывать новую фразу «Не знаю».
+        var r = new AutoTestRunResult(
+            Index: 1, Mode: "x", Question: "q",
+            ExpectedSource: "", ExpectedPdfPage: null, ExpectedSectionContains: null,
+            ExpectedNoEvidence: false,
+            SearchSucceeded: true, RetrievedCount: 1, Sources: Array.Empty<RagSource>(),
+            Answer: "Не знаю", ExpectedFactTerms: Array.Empty<string>(),
+            FoundFactTerms: Array.Empty<string>(),
+            FactCheckPassed: false, SourceCheckPassed: true, SectionCheckPassed: true,
+            Error: null);
+        Assert.True(r.IsAbstentionAnswer);
+    }
+
+    [Fact]
+    public async Task NoRagAnswerService_AbstainsForDocumentQuestions()
+    {
+        // Без RAG модель обязана abstentionить на вопросы про документ/страницу.
+        var llm = new StubLlmClient("Не знаю. Уточните, пожалуйста, вопрос.");
+        var service = new NoRagAnswerService(llm, TimeSpan.FromSeconds(1));
+        var result = await service.AskAsync("Что на стр. 5?", CancellationToken.None);
+        Assert.True(result.Abstained);
+        Assert.Equal(RagAbstentionReason.NoEvidence, result.AbstentionReason);
+        Assert.NotNull(result.ClarificationQuestion);
+    }
+
+    [Fact]
+    public async Task NoRagAnswerService_LlmError_NotAbstention()
+    {
+        var service = new NoRagAnswerService(new ThrowingLlmClient(), TimeSpan.FromSeconds(1));
+        var result = await service.AskAsync("Любой вопрос", CancellationToken.None);
+        Assert.False(result.Abstained);
+        Assert.Equal(RagAbstentionReason.LlmError, result.AbstentionReason);
+        Assert.NotNull(result.Error);
+    }
+
+    [Fact]
+    public async Task AutoTestRunner_PopulatesCitationsAndAbstention_RagMode()
+    {
+        // День 24: AutoTestRunResult должен передавать цитаты и флаги
+        // abstention из RagAnswerService. Доказательство из реального
+        // сервиса, не из заглушки.
+        var indexPath = Path.Combine(_tempDir, "autotest-citations.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c1", "pdf", "Doc", "Микроклимат", "влажность 45%", 1, MakeVector(vectorDim, 1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new RecordingLlmClient(new[]
+        {
+            """
+            ANSWER: влажность 45%
+            QUOTES:
+            [c1] source=pdf section="Микроклимат" pdf_page=1 quote="влажность 45%"
+            """,
+        });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 4, postFilterK: 2);
+        var rag = new RagAnswerService(options, embeddings, llm);
+        var noRag = new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1));
+        var runner = new AutoTestRunner(noRag, rag, Path.Combine(_tempDir, "unused.json"));
+
+        var cases = new List<AutoTestCase>
+        {
+            new(
+                Question: "Вопрос",
+                ExpectedSource: "pdf",
+                ExpectedPdfPage: 1,
+                ExpectedSectionContains: "Микроклимат",
+                ExpectedFactTerms: new[] { "влажность" },
+                ExpectedNoEvidence: false),
+        };
+        var report = await runner.RunAggregateAsync(
+            cases,
+            baseline: options.ToBaselineSettings(),
+            enhanced: null,
+            includeNoRag: false,
+            progress: null,
+            cancellationToken: CancellationToken.None);
+
+        var baselineRun = report.Runs.Single();
+        Assert.NotNull(baselineRun.Citations);
+        Assert.Single(baselineRun.Citations!);
+        Assert.True(baselineRun.Citations![0].Verified);
+        Assert.True(baselineRun.QuoteCheckPassed);
+        Assert.True(baselineRun.AnswerSupportedByQuotes);
+        Assert.False(baselineRun.Abstained);
+    }
+
+    [Fact]
+    public async Task AutoTestRunner_Day24_Abstain_RagNegativeCase()
+    {
+        // Автотест: RAG-режим с негативным кейсом abstentionит «Не знаю»
+        // и помечается как пройденный.
+        var indexPath = Path.Combine(_tempDir, "autotest-noev.sqlite3");
+        const int vectorDim = 4;
+        // Единственный кандидат — с отрицательным косинусом к запросу
+        // (1,0,0,0). При production-настройках (с порогом) отбрасывается.
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("c-low", "pdf", "Doc", "Шум", "55 дБ", 1, MakeVector(vectorDim, -1f, 0f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var llm = new ThrowOnInstructionsLlmClient("LLM не должен вызываться");
+        var options = MakeBaselineOptions(indexPath, preFilterK: 1, postFilterK: 1)
+            with { ScoreThreshold = 0.9f };
+        var rag = new RagAnswerService(options, embeddings, llm);
+        var noRag = new NoRagAnswerService(new StubLlmClient("Не знаю."), TimeSpan.FromSeconds(1));
+        var runner = new AutoTestRunner(noRag, rag, Path.Combine(_tempDir, "unused.json"));
+
+        var cases = new List<AutoTestCase>
+        {
+            new(
+                Question: "Неизвестный вопрос",
+                ExpectedSource: "",
+                ExpectedPdfPage: null,
+                ExpectedSectionContains: null,
+                ExpectedFactTerms: null,
+                ExpectedNoEvidence: true),
+        };
+        var report = await runner.RunAggregateAsync(
+            cases,
+            baseline: options.ToProductionSettings(),
+            enhanced: null,
+            includeNoRag: false,
+            progress: null,
+            cancellationToken: CancellationToken.None);
+
+        var run = report.Runs.Single();
+        Assert.True(run.IsNegativeCase);
+        Assert.True(run.Abstained);
+        Assert.Equal(RagAbstentionReason.NoEvidence, run.AbstentionReason);
+        Assert.Equal(RagAbstentionMessages.Russian, run.Answer);
+        Assert.True(run.Passed, "Негативный RAG-кейс с NoEvidence должен пройти.");
+    }
+
+    [Fact]
+    public async Task AutoTestRunner_Day24_StlbOk1_MapsOnlyToRevit703()
+    {
+        // День 24: STLB-OK1 — это проект, связанный ТОЛЬКО с revit-703
+        // (по Confluence-таблице). Source содержит идентификатор «revit-703»
+        // в section/chunk, а цитата содержит дословный фрагмент проект/сервер.
+        // Ожидаем, что:
+        //   - источник найден и проверен;
+        //   - chunk_id ссылается на revit-703 (не на revit-702/704);
+        //   - source=confluence, что соответствует таблице Confluence.
+        var indexPath = Path.Combine(_tempDir, "stlb-ok1.sqlite3");
+        const int vectorDim = 4;
+        BuildSyntheticIndex(indexPath, "qwen3-embedding:0.6b", vectorDim, new (string, string, string, string, string, int?, float[])[]
+        {
+            ("revit-702", "confluence", "Серверы", "revit-702", "Проекты других годов", 1, MakeVector(vectorDim, 0.1f, 1f)),
+            ("revit-703", "confluence", "Серверы", "revit-703", "Projects 2022: STLB-OK1; server revit-703", 2, MakeVector(vectorDim, 1f, 0f)),
+            ("revit-704", "confluence", "Серверы", "revit-704", "Проекты других годов", 3, MakeVector(vectorDim, 0.5f, 0.5f)),
+        });
+        var embeddings = new OllamaEmbeddingsClient(
+            MakeEmbeddingHttpForQuery(MakeVector(vectorDim, 1f, 0f)),
+            TimeSpan.FromSeconds(2), 0);
+        var structured = """
+            ANSWER: STLB-OK1 находится на revit-703.
+            QUOTES:
+            [revit-703] source=confluence section="revit-703" pdf_page=2 quote="Projects 2022: STLB-OK1; server revit-703"
+            """;
+        var llm = new RecordingLlmClient(new[] { structured });
+        var options = MakeBaselineOptions(indexPath, preFilterK: 3, postFilterK: 3);
+        var rag = new RagAnswerService(options, embeddings, llm);
+        var noRag = new NoRagAnswerService(new StubLlmClient("Не знаю."), TimeSpan.FromSeconds(1));
+        var runner = new AutoTestRunner(noRag, rag, Path.Combine(_tempDir, "unused.json"));
+
+        var cases = new List<AutoTestCase>
+        {
+            new(
+                Question: "На каком сервере STLB-OK1?",
+                ExpectedSource: "confluence",
+                ExpectedPdfPage: 2,
+                ExpectedSectionContains: "revit-703",
+                ExpectedFactTerms: new[] { "revit-703", "STLB-OK1" },
+                ExpectedNoEvidence: false),
+        };
+        var report = await runner.RunAggregateAsync(
+            cases,
+            baseline: options.ToBaselineSettings(),
+            enhanced: null,
+            includeNoRag: false,
+            progress: null,
+            cancellationToken: CancellationToken.None);
+
+        var run = report.Runs.Single();
+        Assert.True(run.SearchSucceeded);
+        Assert.NotEmpty(run.Sources);
+        // STLB-OK1 связан только с revit-703: в результатах поиска
+        // revit-703 должен присутствовать, а chunk_id цитаты ссылается
+        // именно на revit-703 (не на revit-702/704).
+        Assert.Contains(run.Sources, s => s.ChunkId == "revit-703");
+        Assert.Single(run.CitationsSafe);
+        Assert.Equal("revit-703", run.CitationsSafe[0].ChunkId);
+        Assert.NotEqual("revit-702", run.CitationsSafe[0].ChunkId);
+        Assert.NotEqual("revit-704", run.CitationsSafe[0].ChunkId);
+        Assert.True(run.QuoteCheckPassed);
+        Assert.True(run.AnswerSupportedByQuotes);
+        // Версия Revit НЕ заявляется из Projects 2022: в ответе есть «revit-703»,
+        // но не должно быть «2022» как версии Revit (проекты года ≠ версия Revit).
+        Assert.DoesNotContain("Revit 2022", run.Answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("revit-703", run.Answer, StringComparison.OrdinalIgnoreCase);
     }
 }
 

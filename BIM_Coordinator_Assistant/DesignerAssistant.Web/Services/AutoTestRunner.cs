@@ -17,24 +17,126 @@ public sealed class AutoTestRunner
     private readonly NoRagAnswerService _noRag;
     private readonly RagAnswerService _rag;
     private readonly string _questionsPath;
+    private readonly string? _fallbackPath;
 
     public AutoTestRunner(NoRagAnswerService noRag, RagAnswerService rag, string questionsPath)
+        : this(noRag, rag, questionsPath, null)
+    {
+    }
+
+    /// <summary>
+    /// Конструктор с дополнительным «фолбэк»-путём: если
+    /// <paramref name="questionsPath"/> не существует, загрузчик
+    /// пытается открыть <paramref name="fallbackPath"/>. Это позволяет
+    /// автотесту «День 24» иметь собственный набор вопросов в
+    /// wwwroot/app-data, а старым путям — дефолтный fallback.
+    /// </summary>
+    public AutoTestRunner(
+        NoRagAnswerService noRag,
+        RagAnswerService rag,
+        string questionsPath,
+        string? fallbackPath)
     {
         _noRag = noRag;
         _rag = rag;
         _questionsPath = questionsPath;
+        _fallbackPath = fallbackPath;
     }
 
     public string QuestionsPath => _questionsPath;
+    public string? FallbackPath => _fallbackPath;
+
+    /// <summary>
+    /// Возвращает фактический путь к JSON-файлу, который удалось
+    /// открыть: основной, если существует, иначе фолбэк. Если
+    /// ни один не найден — кидает <see cref="FileNotFoundException"/>
+    /// с указанием обоих путей.
+    /// </summary>
+    public string ResolveExistingPath()
+    {
+        if (File.Exists(_questionsPath)) return _questionsPath;
+        if (_fallbackPath is not null && File.Exists(_fallbackPath)) return _fallbackPath;
+        var fallbackInfo = _fallbackPath is null
+            ? "(не задан)"
+            : _fallbackPath;
+        throw new FileNotFoundException(
+            $"Файл вопросов не найден: основной '{_questionsPath}', фолбэк '{fallbackInfo}'.",
+            _questionsPath);
+    }
+
+    /// <summary>
+    /// Определяет, относится ли файл к dedicated Day 24 набору:
+    /// имя файла содержит 'day24' или в JSON есть поле <c>version</c>
+    /// со схемой day24-*.
+    /// </summary>
+    public bool IsDay24Set(string? path = null)
+    {
+        // Безопасная попытка: если файл не существует, не кидаем
+        // FileNotFoundException — это позволяет вызывать метод из
+        // логики построения AutoTestRunResult, где основной путь
+        // мог не существовать (тесты с собственным списком кейсов
+        // через RunAggregateAsync без LoadCasesAsync).
+        string actual;
+        if (path is not null)
+        {
+            actual = path;
+        }
+        else if (File.Exists(_questionsPath))
+        {
+            actual = _questionsPath;
+        }
+        else if (_fallbackPath is not null && File.Exists(_fallbackPath))
+        {
+            actual = _fallbackPath;
+        }
+        else
+        {
+            return false;
+        }
+        var fileName = Path.GetFileName(actual);
+        if (fileName.Contains("day24", StringComparison.OrdinalIgnoreCase)) return true;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(actual));
+            if (doc.RootElement.TryGetProperty("version", out var v) &&
+                v.ValueKind == JsonValueKind.String)
+            {
+                var s = v.GetString();
+                if (!string.IsNullOrEmpty(s) &&
+                    s.StartsWith("day24", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Не валидный JSON или нет доступа — не считаем Day 24.
+        }
+        return false;
+    }
 
     public async Task<IReadOnlyList<AutoTestCase>> LoadCasesAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_questionsPath))
+        var path = ResolveExistingPath();
+        return await LoadCasesFromPathAsync(path, cancellationToken);
+    }
+
+    /// <summary>
+    /// Загрузить вопросы из произвольного JSON-файла. Используется
+    /// и UI-кнопкой «День 24», и тестами для прямой проверки dedicated
+    /// набора. Парсинг толерантен к отсутствию новых полей: старые
+    /// questions.json продолжают работать.
+    /// </summary>
+    public static async Task<IReadOnlyList<AutoTestCase>> LoadCasesFromPathAsync(
+        string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
         {
             throw new FileNotFoundException(
-                $"Файл вопросов не найден: {_questionsPath}", _questionsPath);
+                $"Файл вопросов не найден: {path}", path);
         }
-        await using var stream = File.OpenRead(_questionsPath);
+        await using var stream = File.OpenRead(path);
         var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         if (!doc.RootElement.TryGetProperty("questions", out var arr) ||
             arr.ValueKind != JsonValueKind.Array)
@@ -43,10 +145,8 @@ public sealed class AutoTestRunner
                 "questions.json: ожидается поле questions с массивом.");
         }
         var list = new List<AutoTestCase>();
-        var index = 0;
         foreach (var element in arr.EnumerateArray())
         {
-            index++;
             var question = element.TryGetProperty("question", out var q)
                 ? q.GetString() ?? "" : "";
             var expectedSource = element.TryGetProperty("expected_source", out var s)
@@ -91,13 +191,42 @@ public sealed class AutoTestRunner
             {
                 expectedNoEvidence = noEvidence.GetBoolean();
             }
+            // Day 24: категория кейса (stlb / neighbour / kb_positive и т. п.).
+            // Используется UI и тестами для специальных правил.
+            string? expectedKind = null;
+            if (element.TryGetProperty("expected_kind", out var kind) &&
+                kind.ValueKind == JsonValueKind.String)
+            {
+                expectedKind = kind.GetString();
+            }
+            // Day 24: список «запрещённых» токенов для позитивного ответа.
+            // Если ответ содержит любой из них — он считается провалившим
+            // проверку точности (для STLB-OK1 это revit-702/revit-704).
+            var forbiddenTerms = new List<string>();
+            if (element.TryGetProperty("forbidden_terms", out var forbidden) &&
+                forbidden.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var t in forbidden.EnumerateArray())
+                {
+                    if (t.ValueKind == JsonValueKind.String)
+                    {
+                        var str = t.GetString();
+                        if (!string.IsNullOrWhiteSpace(str))
+                        {
+                            forbiddenTerms.Add(str);
+                        }
+                    }
+                }
+            }
             list.Add(new AutoTestCase(
                 Question: question,
                 ExpectedSource: expectedSource,
                 ExpectedPdfPage: expectedPage,
                 ExpectedSectionContains: expectedSection,
                 ExpectedFactTerms: expectedTerms,
-                ExpectedNoEvidence: expectedNoEvidence));
+                ExpectedNoEvidence: expectedNoEvidence,
+                ExpectedKind: expectedKind,
+                ForbiddenTerms: forbiddenTerms));
         }
         return list;
     }
@@ -250,20 +379,30 @@ public sealed class AutoTestRunner
     {
         string answer;
         string? error;
+        bool abstained;
+        RagAbstentionReason abstentionReason;
+        string? clarification;
         try
         {
             var result = await _noRag.AskAsync(testCase.Question, cancellationToken);
             answer = result.Answer;
             error = result.Error;
+            abstained = result.Abstained;
+            abstentionReason = result.AbstentionReason;
+            clarification = result.ClarificationQuestion;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             answer = "";
             error = ex.Message;
+            abstained = false;
+            abstentionReason = RagAbstentionReason.LlmError;
+            clarification = null;
         }
         var sources = Array.Empty<RagSource>();
         var facts = EvaluateFactTerms(answer, testCase.ExpectedFactTerms);
+        var forbidden = EvaluateForbiddenTerms(answer, testCase.ForbiddenTerms, abstained);
         return new AutoTestRunResult(
             Index: index,
             Mode: "no-rag",
@@ -284,7 +423,18 @@ public sealed class AutoTestRunner
             SourceCheckPassed: EvaluateSource(sources, "no-rag", testCase),
             SectionCheckPassed: EvaluateSection(sources, "no-rag", testCase),
             Error: error,
-            Trace: null);
+            Trace: null,
+            Citations: null,
+            QuoteCheckPassed: false,
+            AnswerSupportedByQuotes: abstained,
+            Abstained: abstained,
+            AbstentionReason: abstentionReason,
+            ExpectedKind: testCase.ExpectedKind,
+            ForbiddenTerms: testCase.ForbiddenTerms ?? Array.Empty<string>(),
+            FoundForbiddenTerms: forbidden.Found,
+            ForbiddenTermsCheckPassed: forbidden.Passed,
+            ClarificationQuestion: clarification,
+            IsDay24Evaluation: IsDay24Set());
     }
 
     private async Task<AutoTestRunResult> RunRagAsync(
@@ -300,6 +450,10 @@ public sealed class AutoTestRunner
         IReadOnlyList<RagSource> sources;
         string? error;
         RagSearchTrace? trace;
+        IReadOnlyList<RagCitation>? citations;
+        bool abstained;
+        RagAbstentionReason abstentionReason;
+        string? clarification;
         try
         {
             var result = await _rag.AskAsync(testCase.Question, settings, cancellationToken);
@@ -309,6 +463,10 @@ public sealed class AutoTestRunner
             retrieved = result.RetrievedCount;
             sources = result.Sources;
             trace = result.Trace;
+            citations = result.CitationsSafe;
+            abstained = result.Abstained;
+            abstentionReason = result.AbstentionReason;
+            clarification = result.ClarificationQuestion;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -319,9 +477,32 @@ public sealed class AutoTestRunner
             retrieved = 0;
             sources = Array.Empty<RagSource>();
             trace = null;
+            citations = Array.Empty<RagCitation>();
+            abstained = true;
+            abstentionReason = RagAbstentionReason.LlmError;
+            clarification = null;
         }
 
         var facts = EvaluateFactTerms(answer, testCase.ExpectedFactTerms);
+        var verifiedCitations = citations
+            .Where(c => c.Verified)
+            .ToArray();
+        // QuoteCheckPassed — есть хотя бы одна подтверждённая цитата
+        // для режима, который не abstentionит.
+        var quoteCheckPassed = verifiedCitations.Length > 0;
+        // AnswerSupportedByQuotes — текст ответа поддержан цитатами
+        // (для abstention — не требуется; abstain уже «Не знаю»).
+        var answerSupported = abstained || RagCitationParser.AnswerSupportedByQuotes(answer, verifiedCitations);
+        // Forbidden-terms check (Day 24): если ответ содержит токены из
+        // ForbiddenTerms (например, для STLB-OK1: revit-702 или revit-704),
+        // это проваливает проверку точности. Для abstention — список
+        // запрещённых токенов автоматически считается соблюдённым,
+        // т.к. ответ «Не знаю» не содержит никаких фактов.
+        var forbidden = EvaluateForbiddenTerms(answer, testCase.ForbiddenTerms, abstained);
+        // День 24: флаг «это Day 24 набор» определяется по файлу
+        // вопросов (имя или version). Для не-Day24 наборов старая
+        // семантика Passed сохраняется без ужесточения.
+        var isDay24 = IsDay24Set();
         return new AutoTestRunResult(
             Index: index,
             Mode: mode,
@@ -342,7 +523,18 @@ public sealed class AutoTestRunner
             SourceCheckPassed: EvaluateSource(sources, mode, testCase),
             SectionCheckPassed: EvaluateSection(sources, mode, testCase),
             Error: error,
-            Trace: trace);
+            Trace: trace,
+            Citations: citations,
+            QuoteCheckPassed: quoteCheckPassed,
+            AnswerSupportedByQuotes: answerSupported,
+            Abstained: abstained,
+            AbstentionReason: abstentionReason,
+            ExpectedKind: testCase.ExpectedKind,
+            ForbiddenTerms: testCase.ForbiddenTerms ?? Array.Empty<string>(),
+            FoundForbiddenTerms: forbidden.Found,
+            ForbiddenTermsCheckPassed: forbidden.Passed,
+            ClarificationQuestion: clarification,
+            IsDay24Evaluation: isDay24);
     }
 
     private static IReadOnlyList<string> EvaluateFactTerms(string answer, IReadOnlyList<string>? terms)
@@ -387,5 +579,35 @@ public sealed class AutoTestRunner
             (string.IsNullOrEmpty(testCase.ExpectedSource) || s.Source == testCase.ExpectedSource) &&
             (testCase.ExpectedPdfPage is null || s.PdfPage == testCase.ExpectedPdfPage) &&
             s.Section.Contains(testCase.ExpectedSectionContains, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Проверить, что ответ не содержит «запрещённых» токенов из
+    /// <see cref="AutoTestCase.ForbiddenTerms"/>. Используется для Day 24:
+    /// STLB-OK1 не должен упоминать revit-702/revit-704, даже если в
+    /// ответе есть revit-703. Для abstention-ответов список
+    /// запрещённых токенов автоматически считается соблюдённым.
+    /// </summary>
+    private static (IReadOnlyList<string> Found, bool Passed) EvaluateForbiddenTerms(
+        string answer, IReadOnlyList<string>? forbidden, bool abstained)
+    {
+        if (abstained || forbidden is null || forbidden.Count == 0)
+        {
+            return (Array.Empty<string>(), true);
+        }
+        if (string.IsNullOrEmpty(answer))
+        {
+            return (Array.Empty<string>(), true);
+        }
+        var found = new List<string>();
+        foreach (var term in forbidden)
+        {
+            if (string.IsNullOrWhiteSpace(term)) continue;
+            if (answer.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                found.Add(term);
+            }
+        }
+        return (found, found.Count == 0);
     }
 }

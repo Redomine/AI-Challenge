@@ -2,6 +2,30 @@
 
 Корпус — это сериализуемая структура, которая потом превращается в чанки.
 Каждой «единице» соответствует заголовок, текст и метаданные.
+
+Помимо классического пути ``confluence.json`` (REST API выгрузки с
+``body.storage`` / ``body.view``) поддерживается дополнительный
+источник — HTML-выгрузка Confluence (``view``, сохранённая через
+браузер). Из неё извлекаются табличные связи «проект ↔ сервер» и
+эмитятся как :class:`CorpusUnit` с ``source="confluence_html"`` и
+понятным ``section_path``. Каждая связь остаётся search-уникальной
+единицей, которую можно процитировать в ответе, и сохраняет
+привязку ``(раздел, год, имя сервера, код проекта)``.
+
+Дубликаты из PDF
+-----------------
+
+Когда HTML-выгрузка поставляется вместе с PDF, текст PDF содержит те
+же таблицы сопоставления «проект ↔ сервер», но в виде плоского текста
+(строки и колонки перечислены в линейном порядке). Такие «серверные»
+таблицы удаляют из текста PDF, **только если множество их
+``revit-XXX``-колонок уже покрыто HTML**. Остальное содержимое
+PDF (вступления, инструкции, RSN.ini, заголовки разделов и т.п.)
+сохраняется без изменений.
+
+Дополнительный модуль :mod:`pdf_server_table` отвечает за детекцию
+и удаление таких дубликатов; :func:`build_corpus` лишь вызывает
+его и прикрепляет сводку удалённых блоков к метаданным корпуса.
 """
 
 from __future__ import annotations
@@ -12,6 +36,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .confluence import ConfluenceDoc, Section
+from .confluence_html import ConfluenceHtmlDoc
+from .pdf_server_table import (
+    StrippedBlock,
+    strip_server_table_blocks,
+)
 from .pdf_text import PdfDoc
 
 
@@ -20,7 +49,7 @@ class CorpusUnit:
     """Одна логическая единица текста в корпусе."""
 
     unit_id: str  # стабильный идентификатор unit внутри источника
-    source: str  # "confluence" | "pdf"
+    source: str  # "confluence" | "confluence_html" | "pdf"
     title: str
     section_path: List[str]  # путь из заголовков от корня
     text: str
@@ -100,30 +129,120 @@ def _confluence_units(doc: ConfluenceDoc) -> List[CorpusUnit]:
     return out
 
 
-def _pdf_units(doc: PdfDoc, *, source_title: str) -> List[CorpusUnit]:
+def _confluence_html_units(doc: ConfluenceHtmlDoc) -> List[CorpusUnit]:
+    """Превратить таблицу «проект ↔ сервер» в :class:`CorpusUnit`‑ы.
+
+    Каждая ``ConfluenceHtmlRelation`` становится отдельным юнитом
+    с ``source="confluence_html"``. Ординал в ``unit_id`` нужен
+    потому, что один и тот же ``(section_path, row_label, column_header,
+    project_code)`` теоретически может встретиться дважды в разных
+    под-таблицах (например, ``STLB-OK1`` теоретически мог бы
+    переехать на revit-704 в новой выгрузке).
+    """
+
     out: List[CorpusUnit] = []
+    # Ключ для ординала: всё, что делает юнит уникальным.
+    keys: Dict[tuple, int] = {}
+    for rel in doc.relations:
+        # Собираем section_path с учётом row_label и column_header как
+        # «хвостовыми» элементами, чтобы поисковая выдача сохраняла
+        # всю иерархию (от h2 до конкретного проекта). Это полезно
+        # при цитировании: пользователь видит, в каком разделе
+        # находится конкретная связь.
+        section_path = list(rel.section_path) + [
+            rel.row_label,
+            rel.column_header,
+        ]
+        key = (
+            tuple(rel.section_path),
+            rel.row_label,
+            rel.column_header,
+            rel.project_code,
+        )
+        keys[key] = keys.get(key, 0) + 1
+        out.append(
+            CorpusUnit(
+                unit_id=rel.unit_id(occurrence=keys[key]),
+                source="confluence_html",
+                # title делаем «говорящим»: «Проекты 2022 / revit-703».
+                title=f"{rel.row_label} / {rel.column_header}",
+                section_path=section_path,
+                text=rel.text(),
+                # ``heading_level`` не имеет смысла для табличной
+                # связи — оставляем 0, как и для всего, что не h3+.
+                heading_level=0,
+            )
+        )
+    return out
+
+
+def _pdf_units(
+    doc: PdfDoc,
+    *,
+    source_title: str,
+    html_columns: Optional[set[str]] = None,
+) -> tuple[List[CorpusUnit], List[StrippedBlock]]:
+    """Превратить страницы PDF в :class:`CorpusUnit`‑ы.
+
+    Если ``html_columns`` непусто, текст каждой страницы сначала
+    прогоняется через :func:`strip_server_table_blocks` —
+    дедупликация против HTML-выгрузки Confluence. Возвращает
+    пару ``(units, снятые_блоки)``.
+    """
+
+    out: List[CorpusUnit] = []
+    all_stripped: List[StrippedBlock] = []
     for page in doc.pages:
-        if not page.text.strip():
+        page_text = page.text
+        if not page_text.strip():
+            continue
+        # Применяем дедупликацию, если есть HTML-колонки.
+        stripped_in_page: List[StrippedBlock] = []
+        if html_columns:
+            result = strip_server_table_blocks(
+                page_text, html_columns=html_columns
+            )
+            page_text = result.cleaned_text
+            stripped_in_page = list(result.stripped_blocks)
+            # Переносим номера страниц в блоки (StripResult рантайм
+            # заполняет ``page_number=0``).
+            stripped_in_page = [
+                StrippedBlock(
+                    page_number=page.page_number,
+                    start_line=b.start_line,
+                    end_line=b.end_line,
+                    columns=b.columns,
+                    matched_html=b.matched_html,
+                )
+                for b in stripped_in_page
+            ]
+            all_stripped.extend(stripped_in_page)
+        if not page_text.strip():
+            # Вся страница ушла серверной таблицей — пропускаем её
+            # целиком, чтобы не плодить пустые чанки.
             continue
         title = source_title
         path = [source_title, f"Страница {page.page_number}"]
         if page.is_heading:
             # Если есть заголовок — используем его как заголовок секции.
-            heading_text = page.text.split("\n", 1)[0].strip()
-            title = heading_text
-            path = [source_title, f"Страница {page.page_number}", heading_text]
+            # Берём заголовок из очищенного текста, чтобы не
+            # «прыгнуть» в удалённую серверную таблицу.
+            heading_text = page_text.split("\n", 1)[0].strip()
+            if heading_text:
+                title = heading_text
+                path = [source_title, f"Страница {page.page_number}", heading_text]
         out.append(
             CorpusUnit(
                 unit_id=f"pdf:{doc.path.name}:p{page.page_number}",
                 source="pdf",
                 title=title,
                 section_path=path,
-                text=page.text,
+                text=page_text,
                 pdf_page=page.page_number,
                 heading_level=page.heading_level or 0,
             )
         )
-    return out
+    return out, all_stripped
 
 
 def build_corpus(
@@ -131,13 +250,38 @@ def build_corpus(
     confluence_doc: ConfluenceDoc,
     pdf_doc: PdfDoc,
     pdf_title: str,
+    confluence_html_doc: Optional[ConfluenceHtmlDoc] = None,
 ) -> Corpus:
-    """Собрать корпус из обоих источников."""
+    """Собрать корпус из всех источников.
 
-    units = _confluence_units(confluence_doc) + _pdf_units(
-        pdf_doc, source_title=pdf_title or pdf_doc.path.stem
+    ``confluence_html_doc`` — опциональная HTML-выгрузка Confluence.
+    Если она ``None``, поведение полностью идентично прежнему
+    (только ``confluence`` + ``pdf``); это сохраняет
+    обратную совместимость для всех существующих тестов и
+    скриптов.
+
+    Когда ``confluence_html_doc`` задан, текст PDF прогоняется через
+    :mod:`docindexing.pdf_server_table` — блоки таблиц «проект ↔
+    сервер», чей набор ``revit-XXX``-колонок уже покрыт HTML,
+    удаляются. Это устраняет неоднозначные чанки вроде
+    «STLB-OK1 + revit-702 revit-703 revit-704», которые иначе
+    возникают при наличии обоих источников. Остальной текст PDF
+    сохраняется.
+    """
+
+    units = _confluence_units(confluence_doc)
+    if confluence_html_doc is not None:
+        units.extend(_confluence_html_units(confluence_html_doc))
+    html_columns: Optional[set[str]] = None
+    if confluence_html_doc is not None:
+        html_columns = {r.column_header for r in confluence_html_doc.relations}
+    pdf_units, stripped_blocks = _pdf_units(
+        pdf_doc,
+        source_title=pdf_title or pdf_doc.path.stem,
+        html_columns=html_columns,
     )
-    sources = {
+    units.extend(pdf_units)
+    sources: Dict[str, dict] = {
         "confluence": {
             "page_id": confluence_doc.page_id,
             "title": confluence_doc.title,
@@ -155,6 +299,27 @@ def build_corpus(
             "title_hint": pdf_doc.title_hint,
         },
     }
+    if confluence_html_doc is not None:
+        sources["confluence_html"] = {
+            "page_id": confluence_html_doc.page_id,
+            "title": confluence_html_doc.title,
+            "source_path": str(confluence_html_doc.source_path),
+            "relations": len(confluence_html_doc.relations),
+            "tables_parsed": confluence_html_doc.tables_parsed,
+            "section_header_rows": confluence_html_doc.section_header_rows,
+        }
+        # Метрика дедупликации: сколько блоков и строк PDF
+        # удалено, какие revit-колонки были задеты.
+        stripped_columns: List[str] = sorted({
+            c for b in stripped_blocks for c in b.columns
+        })
+        sources["pdf_dedup"] = {
+            "matched_blocks": len(stripped_blocks),
+            "stripped_lines": sum(
+                max(0, b.end_line - b.start_line) for b in stripped_blocks
+            ),
+            "stripped_columns": stripped_columns,
+        }
     return Corpus(sources=sources, units=units)
 
 

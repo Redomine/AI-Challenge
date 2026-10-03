@@ -120,13 +120,23 @@ def _cmd_build(args) -> int:
     if args.skip_embeddings:
         # Только корпус без эмбеддингов — для отладки.
         from .confluence import load_confluence_doc
+        from .confluence_html import load_confluence_html_doc
         from .pdf_text import extract_pdf
         from . import corpus as corpus_mod
 
         cf = load_confluence_doc(cfg.confluence_json)
         pdf = extract_pdf(cfg.pdf_path)
+        cf_html = (
+            load_confluence_html_doc(cfg.confluence_html)
+            if cfg.confluence_html is not None
+            and cfg.confluence_html.exists()
+            else None
+        )
         built = corpus_mod.build_corpus(
-            confluence_doc=cf, pdf_doc=pdf, pdf_title=cfg.pdf_path.stem
+            confluence_doc=cf,
+            pdf_doc=pdf,
+            pdf_title=cfg.pdf_path.stem,
+            confluence_html_doc=cf_html,
         )
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         corpus_mod.save_corpus(built, cfg.corpus_path())
@@ -136,6 +146,9 @@ def _cmd_build(args) -> int:
                 "corpus_path": str(cfg.corpus_path()),
                 "confluence_sections": len(cf.sections),
                 "pdf_pages": len(pdf.pages),
+                "confluence_html_relations": (
+                    len(cf_html.relations) if cf_html is not None else 0
+                ),
             },
             ensure_ascii=False,
             indent=2,

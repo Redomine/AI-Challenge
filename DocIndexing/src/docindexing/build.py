@@ -12,6 +12,7 @@ from typing import Dict, List, Mapping, Tuple
 from . import chunking, corpus, embeddings, hashing
 from .config import RunConfig
 from .confluence import load_confluence_doc
+from .confluence_html import load_confluence_html_doc
 from .index_store import IndexStore
 from .pdf_text import extract_pdf
 
@@ -176,13 +177,37 @@ def build_index(cfg: RunConfig) -> dict:
     cf_doc = load_confluence_doc(cfg.confluence_json)
     LOG.info("Confluence: title=%r, sections=%d", cf_doc.title, len(cf_doc.sections))
 
+    # Опциональная HTML-выгрузка Confluence (``view``, сохранённая через
+    # браузер). Если файл не указан или отсутствует на диске —
+    # пропускаем без ошибки, чтобы существующие сценарии (только JSON
+    # + PDF) продолжали работать без изменений.
+    cf_html_doc = None
+    if cfg.confluence_html is not None:
+        if cfg.confluence_html.exists():
+            LOG.info("Loading confluence HTML: %s", cfg.confluence_html)
+            cf_html_doc = load_confluence_html_doc(cfg.confluence_html)
+            LOG.info(
+                "Confluence HTML: title=%r, relations=%d, tables=%d",
+                cf_html_doc.title,
+                len(cf_html_doc.relations),
+                cf_html_doc.tables_parsed,
+            )
+        else:
+            LOG.info(
+                "Confluence HTML source not found (%s); skipping.",
+                cfg.confluence_html,
+            )
+
     LOG.info("Extracting PDF: %s", cfg.pdf_path)
     pdf_doc = extract_pdf(cfg.pdf_path)
     LOG.info("PDF: pages=%d, chars=%d", len(pdf_doc.pages), pdf_doc.raw_char_count)
 
     LOG.info("Building corpus")
     built_corpus = corpus.build_corpus(
-        confluence_doc=cf_doc, pdf_doc=pdf_doc, pdf_title=cfg.pdf_path.stem
+        confluence_doc=cf_doc,
+        pdf_doc=pdf_doc,
+        pdf_title=cfg.pdf_path.stem,
+        confluence_html_doc=cf_html_doc,
     )
     LOG.info("Corpus units: %d", len(built_corpus.units))
 
@@ -190,6 +215,8 @@ def build_index(cfg: RunConfig) -> dict:
         "confluence_json_sha256": hashing.file_sha256(cfg.confluence_json),
         "pdf_sha256": hashing.file_sha256(cfg.pdf_path),
     }
+    if cfg.confluence_html is not None and cfg.confluence_html.exists():
+        hashes["confluence_html_sha256"] = hashing.file_sha256(cfg.confluence_html)
 
     # Сохраняем корпус для воспроизводимости.
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
@@ -233,6 +260,8 @@ def build_index(cfg: RunConfig) -> dict:
         "confluence": str(cfg.confluence_json),
         "pdf": str(cfg.pdf_path),
     }
+    if cfg.confluence_html is not None and cfg.confluence_html.exists():
+        file_paths["confluence_html"] = str(cfg.confluence_html)
 
     provenance_records = {
         "confluence": (
@@ -253,6 +282,23 @@ def build_index(cfg: RunConfig) -> dict:
             {"pages": len(pdf_doc.pages), "title_hint": pdf_doc.title_hint},
         ),
     }
+    if (
+        cfg.confluence_html is not None
+        and cfg.confluence_html.exists()
+        and cf_html_doc is not None
+    ):
+        provenance_records["confluence_html"] = (
+            str(cfg.confluence_html),
+            hashes["confluence_html_sha256"],
+            len(cf_html_doc.relations),
+            {
+                "page_id": cf_html_doc.page_id,
+                "title": cf_html_doc.title,
+                "tables_parsed": cf_html_doc.tables_parsed,
+                "section_header_rows": cf_html_doc.section_header_rows,
+                "relations": len(cf_html_doc.relations),
+            },
+        )
 
     # Эмбеддинги батчами.
     fixed_vectors = _embed_chunks(client, fixed_chunks, cfg, label="fixed")
@@ -292,6 +338,7 @@ def build_index(cfg: RunConfig) -> dict:
         cfg=cfg,
         corpus_obj=built_corpus,
         cf_doc=cf_doc,
+        cf_html_doc=cf_html_doc,
         pdf_doc=pdf_doc,
         hashes=hashes,
         fixed_chunks=fixed_chunks,
@@ -336,6 +383,7 @@ def _compute_metrics(
     cfg: RunConfig,
     corpus_obj: corpus.Corpus,
     cf_doc,
+    cf_html_doc,
     pdf_doc,
     hashes: Dict[str, str],
     fixed_chunks,
@@ -361,6 +409,11 @@ def _compute_metrics(
 
     indexed_words_cf = sum(
         tu.count_words(u.text) for u in corpus_obj.units if u.source == "confluence"
+    )
+    indexed_words_cf_html = sum(
+        tu.count_words(u.text)
+        for u in corpus_obj.units
+        if u.source == "confluence_html"
     )
     indexed_words_pdf = sum(
         tu.count_words(u.text) for u in corpus_obj.units if u.source == "pdf"
@@ -405,6 +458,34 @@ def _compute_metrics(
             "raw_words": raw_words_pdf,
             "headings_detected": sum(1 for p in pdf_doc.pages if p.is_heading),
         },
+        # Метрики для опциональной HTML-выгрузки Confluence:
+        # оставлены отдельно, чтобы не «взрывать» уже существующий
+        # контракт ``confluence.words + pdf.words == corpus.words``
+        # (см. test_assignment_acceptance.py / test_build_metrics.py).
+        # Этот раздел появляется в отчёте только если HTML задан и
+        # существует на диске; в остальных случаях он опускается,
+        # чтобы прежние assert'ы не падали.
+        "confluence_html": (
+            None
+            if cfg.confluence_html is None
+            or not cfg.confluence_html.exists()
+            else {
+                "path": str(cfg.confluence_html),
+                "sha256": hashes.get("confluence_html_sha256"),
+                "page_id": cf_html_doc.page_id if cf_html_doc is not None else None,
+                "title": cf_html_doc.title if cf_html_doc is not None else None,
+                "relations": (
+                    len(cf_html_doc.relations) if cf_html_doc is not None else 0
+                ),
+                "tables_parsed": (
+                    cf_html_doc.tables_parsed if cf_html_doc is not None else 0
+                ),
+                "section_header_rows": (
+                    cf_html_doc.section_header_rows if cf_html_doc is not None else 0
+                ),
+                "words": indexed_words_cf_html,
+            }
+        ),
         "corpus": {
             "units": len(corpus_obj.units),
             "words": total_words_corpus,

@@ -206,12 +206,44 @@
                     <article class="rag-answer">
                         <header>
                             <strong>@(_ragLast.Mode == RagMode.NoRag ? "Ответ без RAG" : _ragLast.Mode == RagMode.Enhanced ? "RAG-enhanced ответ" : "RAG-baseline ответ")</strong>
-                            <span>@(_ragLast.SearchSucceeded ? $"Найдено {_ragLast.RetrievedCount}" : "Поиск не выполнен")</span>
+                            <span>
+                                @if (_ragLast.Abstained)
+                                {
+                                    <span class="rag-check ok">@_ragLast.AbstentionReason</span>
+                                }
+                                else
+                                {
+                                    <span>@(_ragLast.SearchSucceeded ? $"Найдено {_ragLast.RetrievedCount}" : "Поиск не выполнен")</span>
+                                }
+                            </span>
                         </header>
                         <pre>@_ragLast.Answer</pre>
+                        @if (_ragLast.Abstained && !string.IsNullOrWhiteSpace(_ragLast.ClarificationQuestion))
+                        {
+                            <div class="rag-error">@_ragLast.ClarificationQuestion</div>
+                        }
                         @if (!string.IsNullOrWhiteSpace(_ragLast.Error))
                         {
                             <div class="rag-error">@_ragLast.Error</div>
+                        }
+                        @if (_ragLast.CitationsSafe.Count > 0)
+                        {
+                            <details class="rag-sources" open>
+                                <summary>Цитаты (@_ragLast.CitationsSafe.Count, проверено @_ragLast.CitationsSafe.Count(c => c.Verified))</summary>
+                                <ol>
+                                    @foreach (var c in _ragLast.CitationsSafe)
+                                    {
+                                        <li>
+                                            <div>
+                                                <strong>@c.Reference</strong>
+                                                <span class="rag-check @(c.Verified ? "ok" : "fail")">@(c.Verified ? "дословно" : "НЕ найдено")</span>
+                                            </div>
+                                            <small class="muted">section: @c.Section</small>
+                                            <p style="white-space: pre-wrap;">@c.Quote</p>
+                                        </li>
+                                    }
+                                </ol>
+                            </details>
                         }
                         @if (_ragLast.Trace is not null)
                         {
@@ -240,7 +272,7 @@
                         }
                         @if (_ragLast.Sources.Count > 0)
                         {
-                            <details class="rag-sources" open>
+                            <details class="rag-sources">
                                 <summary>Источники (@_ragLast.Sources.Count)</summary>
                                 <ol>
                                     @foreach (var source in _ragLast.Sources)
@@ -260,11 +292,12 @@
                     <header>
                         <div>
                             <strong>Автотест RAG</strong>
-                            <p class="muted">«Обычный автотест» — legacy-прогон no-rag vs rag. «Сравнить режимы» — Day 23: no-rag, baseline и enhanced (rewrite + pre-K + threshold + post-K).</p>
+                            <p class="muted">«Обычный автотест» — legacy-прогон no-rag vs rag. «Сравнить режимы» — Day 23: no-rag, baseline и enhanced (rewrite + pre-K + threshold + post-K). «Тест День 24» — production-настройки с проверкой цитат и abstention «Не знаю».</p>
                         </div>
                         <div class="rag-composer-actions">
                             <button class="secondary" @onclick="RunLegacyAutoTestAsync" disabled="@_ragBusy">Обычный автотест</button>
                             <button class="secondary" @onclick="RunCompareModesAsync" disabled="@_ragBusy">Сравнить режимы</button>
+                            <button class="primary" @onclick="RunDay24TestAsync" disabled="@_ragBusy">Тест День 24</button>
                             @if (_autoTestCancellation is not null)
                             {
                                 <button class="secondary" @onclick="CancelAutoTest">Остановить</button>
@@ -373,6 +406,74 @@
                             <span>С ошибкой: <strong>@_autoTestReport.WithErrors</strong></span>
                             <span class="muted">RAG-режим: @_autoTestReport.RagRuns.Count · No-RAG: @_autoTestReport.NoRagRuns.Count</span>
                         </div>
+                    }
+                    @if (_day24Report is not null)
+                    {
+                        var d24 = _day24Report;
+                        <div class="rag-summary">
+                            <span>Всего вопросов: <strong>@d24.Count</strong></span>
+                            <span>С цитатами: <strong>@d24.Count(r => r.QuoteCheckPassed)</strong></span>
+                            <span>Поддержанных: <strong>@d24.Count(r => r.AnswerSupportedByQuotes)</strong></span>
+                            <span class="muted">«Не знаю»: @d24.Count(r => r.Abstained)</span>
+                            <span class="muted">Без запрещённых токенов: @d24.Count(r => r.ForbiddenTermsCheckPassed)</span>
+                        </div>
+                        <details class="rag-runs" open>
+                            <summary>Результаты по 10 вопросам (production-настройки)</summary>
+                            <ol>
+                                @foreach (var run in d24)
+                                {
+                                    <li>
+                                        <div>
+                                            <strong>#@run.Index · @run.Mode</strong>
+                                            <span class="muted">@run.Question</span>
+                                            @if (!string.IsNullOrWhiteSpace(run.ExpectedKind)) { <span class="rag-check ok">kind: @run.ExpectedKind</span> }
+                                        </div>
+                                        <div class="rag-checks">
+                                            <span class="rag-check @(run.FactCheckPassed ? "ok" : "fail")">термины: @(run.ExpectedFactTerms.Count == 0 ? "—" : $"{run.FoundFactTerms.Count}/{run.ExpectedFactTerms.Count}")</span>
+                                            <span class="rag-check @(run.SourceCheckPassed ? "ok" : "fail")">источник: @(string.IsNullOrEmpty(run.ExpectedSource) ? "—" : run.ExpectedSource)</span>
+                                            <span class="rag-check @(run.SectionCheckPassed ? "ok" : "fail")">секция: @(run.ExpectedSectionContains ?? "—")</span>
+                                            <span class="rag-check @(run.QuoteCheckPassed ? "ok" : "fail")">цитаты: @run.CitationsSafe.Count</span>
+                                            <span class="rag-check @(run.AnswerSupportedByQuotes ? "ok" : "fail")">поддержано цитатами</span>
+                                            <span class="rag-check @(run.ForbiddenTermsCheckPassed ? "ok" : "fail")">без запрещённых: @(run.ForbiddenTermsSafe.Count == 0 ? "—" : $"{run.ForbiddenTermsSafe.Count - run.FoundForbiddenTermsSafe.Count}/{run.ForbiddenTermsSafe.Count}")</span>
+                                            @if (run.Abstained) { <span class="rag-check ok">abstain: @run.AbstentionReason</span> }
+                                            @if (run.IsNegativeCase) { <span class="rag-check ok">негативный</span> }
+                                            @if (!string.IsNullOrWhiteSpace(run.Error)) { <span class="rag-check fail">ошибка: @run.Error</span> }
+                                        </div>
+                                        <pre>@run.Answer</pre>
+                                        @if (run.FoundForbiddenTermsSafe.Count > 0)
+                                        {
+                                            <div class="rag-error">Обнаружены запрещённые токены в ответе: @string.Join(", ", run.FoundForbiddenTermsSafe)</div>
+                                        }
+                                        @if (run.CitationsSafe.Count > 0)
+                                        {
+                                            <details><summary>Цитаты (@run.CitationsSafe.Count)</summary>
+                                                <ol>
+                                                    @foreach (var c in run.CitationsSafe)
+                                                    {
+                                                        <li>
+                                                            <strong>@c.Reference</strong>
+                                                            <span class="rag-check @(c.Verified ? "ok" : "fail")">@(c.Verified ? "дословно" : "НЕ найдено")</span>
+                                                            <p style="white-space: pre-wrap;">@c.Quote</p>
+                                                        </li>
+                                                    }
+                                                </ol>
+                                            </details>
+                                        }
+                                        @if (run.Sources.Count > 0)
+                                        {
+                                            <details><summary>Источники (@run.Sources.Count)</summary>
+                                                <ol>
+                                                    @foreach (var s in run.Sources)
+                                                    {
+                                                        <li><strong>@s.Title</strong> <span class="muted">@s.Source@(s.PdfPage is int p ? $" · стр. {p}" : "")</span> <small class="muted">@s.Section</small> <span class="muted">score @s.Score.ToString("F3")</span> <code>@s.ChunkId</code></li>
+                                                    }
+                                                </ol>
+                                            </details>
+                                        }
+                                    </li>
+                                }
+                            </ol>
+                        </details>
                     }
                 </article>
             </section>
@@ -569,6 +670,7 @@
     private List<string> _autoTestProgress = new();
     private AutoTestReport? _autoTestReport;
     private AutoTestAggregateReport? _autoTestAggregate;
+    private IReadOnlyList<AutoTestRunResult>? _day24Report;
     private CancellationTokenSource? _autoTestCancellation;
     private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
@@ -814,7 +916,11 @@
                 _ = InvokeAsync(StateHasChanged);
             });
             // Сравниваем baseline и enhanced (с настройками текущего UI).
-            var baselineSettings = RagQuery.Options.ToBaselineSettings();
+            // Сравнение режимов: legacy-baseline (без threshold, без rewrite)
+            // против enhanced (с rewrite, threshold, pre/post-K). Legacy-baseline
+            // НЕ используется в продовом UI — там работает production-режим
+            // через ToProductionSettings (см. RagQueryService.DefaultForMode).
+            var baselineSettings = RagQuery.LegacyBaselineSettings();
             RagRunSettings enhancedSettings;
             try
             {
@@ -851,6 +957,67 @@
             _ragStatus = "Сравнение режимов завершено";
         }
         catch (Exception exception) { _notice = exception.Message; _ragStatus = "Ошибка автотеста"; }
+        finally
+        {
+            _ragBusy = false;
+            _autoTestCancellation?.Dispose();
+            _autoTestCancellation = null;
+        }
+    }
+    private async Task RunDay24TestAsync()
+    {
+        // Тест День 24: production-настройки + проверка цитат + abstention.
+        // Сохраняет контракт автотеста, но прогоняет только production-режим
+        // (RagMode.Rag) без no-rag и без comparison-baseline. UI показывает
+        // статусы цитирования и поддержки ответа.
+        // Загружает dedicated набор questions-day24.json (10 вопросов:
+        // STLB-OK1, neighbour-колонки, no-evidence, ambiguity, KB-positive).
+        _ragBusy = true;
+        _autoTestCancellation = new CancellationTokenSource();
+        _autoTestProgress = new List<string> { "Загружаю контрольные вопросы..." };
+        _autoTestReport = null;
+        _autoTestAggregate = null;
+        _ragStatus = "Тест День 24 запущен";
+        try
+        {
+            IReadOnlyList<AutoTestCase> cases;
+            try
+            {
+                cases = await AutoTest.LoadCasesAsync(_autoTestCancellation.Token);
+            }
+            catch (Exception loadEx)
+            {
+                _notice = $"Не удалось загрузить контрольные вопросы: {loadEx.Message}";
+                _ragBusy = false;
+                return;
+            }
+            _autoTestProgress.Clear();
+            _autoTestProgress.Add($"Загружено {cases.Count} вопросов ({(AutoTest.IsDay24Set() ? "Day 24 dedicated set" : "legacy set")})");
+            var progress = new Progress<string>(line =>
+            {
+                _autoTestProgress.Add(line);
+                _ = InvokeAsync(StateHasChanged);
+            });
+            var productionSettings = RagQuery.Options.ToProductionSettings();
+            var aggregate = await AutoTest.RunAggregateAsync(
+                cases,
+                baseline: productionSettings,
+                enhanced: null,
+                includeNoRag: false,
+                progress: progress,
+                cancellationToken: _autoTestCancellation.Token);
+            // Оставляем только production-режим: переименовываем baseline → production.
+            _day24Report = aggregate.Runs
+                .Select(r => r.Mode == "baseline" ? r with { Mode = "production" } : r)
+                .ToArray();
+            _autoTestProgress.Add($"Завершено: {_day24Report.Count(r => r.QuoteCheckPassed)}/{_day24Report.Count} с цитатами, {_day24Report.Count(r => r.Abstained)} abstentions, {_day24Report.Count(r => r.ForbiddenTermsCheckPassed)} без запрещённых токенов");
+            _ragStatus = "Тест День 24 завершён";
+        }
+        catch (Exception exception)
+        {
+            _notice = exception.Message;
+            _ragStatus = "Ошибка теста День 24";
+        }
         finally
         {
             _ragBusy = false;

@@ -7,14 +7,15 @@ namespace DesignerAssistant.Web.Services;
 /// Сервис ответа без RAG: чистый вызов LLM без поискового контекста
 /// и без инструментов Revit. Используется для оценки «голой» модели
 /// и как контрастный режим в автотесте.
+/// День 24: без источников модель обязана abstentionить «Не знаю».
 /// </summary>
 public sealed class NoRagAnswerService
 {
     private const string Instructions = """
         Ты отвечаешь на вопрос пользователя. У тебя нет доступа к
         локальной базе знаний и инструментам Revit. Если вопрос про
-        конкретный документ/страницу — прямо скажи, что без базы
-        знаний подтвердить факт невозможно. Не выдумывай данные.
+        конкретный документ/страницу или требует фактической проверки —
+        ответь ровно «Не знаю» и попроси уточнить. Не выдумывай данные.
         """;
 
     private readonly ILlmClient _llm;
@@ -40,18 +41,46 @@ public sealed class NoRagAnswerService
                 Instructions,
                 new[] { new ChatMessage("user", question) },
                 cts.Token);
-            return new NoRagAnswer(question, response.Content, null);
+            var content = response.Content ?? "";
+            var abstained = IsAbstention(content);
+            return new NoRagAnswer(
+                question,
+                content,
+                null,
+                abstained,
+                abstained ? RagAbstentionReason.NoEvidence : RagAbstentionReason.None,
+                abstained ? RagAbstentionMessages.DefaultClarification : null);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return new NoRagAnswer(
                 question,
                 $"LLM превысил таймаут {_timeout.TotalSeconds:N0} с.",
-                "timeout");
+                "timeout",
+                false,
+                RagAbstentionReason.LlmError);
         }
         catch (Exception ex)
         {
-            return new NoRagAnswer(question, $"Ошибка: {ex.Message}", ex.Message);
+            return new NoRagAnswer(
+                question,
+                $"Ошибка: {ex.Message}",
+                ex.Message,
+                false,
+                RagAbstentionReason.LlmError);
         }
+    }
+
+    private static bool IsAbstention(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        var trimmed = content.Trim();
+        if (trimmed.StartsWith("Не знаю", StringComparison.OrdinalIgnoreCase)) return true;
+        if (trimmed.Length < 200 &&
+            trimmed.Contains("не знаю", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return false;
     }
 }

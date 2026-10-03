@@ -27,6 +27,9 @@ public enum RagMode
 /// RAG (для режима без поиска — null).
 /// Поле <see cref="Settings"/> содержит фактические настройки,
 /// с которыми выполнялся запрос — для воспроизводимости в UI/отчёте.
+/// Поля <see cref="Citations"/>, <see cref="Abstained"/> и
+/// <see cref="AbstentionReason"/> добавлены на День 24 для обязательных
+/// цитат и явного «Не знаю».
 /// </summary>
 public sealed record RagQueryResult(
     string Question,
@@ -37,7 +40,11 @@ public sealed record RagQueryResult(
     IReadOnlyList<RagSource> Sources,
     string? Error,
     RagSearchTrace? Trace = null,
-    RagRunSettings? Settings = null)
+    RagRunSettings? Settings = null,
+    IReadOnlyList<RagCitation>? Citations = null,
+    bool Abstained = false,
+    RagAbstentionReason AbstentionReason = RagAbstentionReason.None,
+    string? ClarificationQuestion = null)
 {
     /// <summary>Режим в виде строки для логов и UI.</summary>
     public string ModeLabel => Mode switch
@@ -47,6 +54,9 @@ public sealed record RagQueryResult(
         RagMode.NoRag => "no-rag",
         _ => Mode.ToString(),
     };
+
+    /// <summary>Фактический список цитат без null.</summary>
+    public IReadOnlyList<RagCitation> CitationsSafe => Citations ?? Array.Empty<RagCitation>();
 }
 
 /// <summary>
@@ -124,7 +134,11 @@ public sealed class RagQueryService
                 Array.Empty<RagSource>(),
                 noRag.Error,
                 null,
-                null);
+                null,
+                null,
+                noRag.Abstained,
+                noRag.AbstentionReason,
+                noRag.ClarificationQuestion);
         }
 
         // Rag и Enhanced: используем либо overrideSettings (с валидацией),
@@ -160,13 +174,29 @@ public sealed class RagQueryService
             rag.Sources,
             rag.Error,
             rag.Trace,
-            effective);
+            effective,
+            rag.CitationsSafe,
+            rag.Abstained,
+            rag.AbstentionReason,
+            rag.ClarificationQuestion);
     }
 
-    /// <summary>Дефолтные настройки для режима (без пользовательского override).</summary>
+    /// <summary>
+    /// Дефолтные настройки для режима (без пользовательского override).
+    /// День 24: для <see cref="RagMode.Rag"/> и NoRag в проде
+    /// используются production-настройки (с порогом), чтобы чат
+    /// не отвечал на слабом контексте. Comparison-режим берёт явный
+    /// legacy baseline без threshold через <see cref="LegacyBaselineSettings"/>.
+    /// </summary>
     public RagRunSettings DefaultForMode(RagMode mode) => mode switch
     {
         RagMode.Enhanced => _options.ToEnhancedSettings(),
-        _ => _options.ToBaselineSettings(),
+        _ => _options.ToProductionSettings(),
     };
+
+    /// <summary>
+    /// Legacy-baseline без фильтра по скору. Используется только
+    /// comparison-режимом (День 23) для сравнения с enhanced.
+    /// </summary>
+    public RagRunSettings LegacyBaselineSettings() => _options.ToBaselineSettings();
 }

@@ -14,6 +14,49 @@ public sealed record RagSource(
     float Score);
 
 /// <summary>
+/// Причина abstention в RAG-ответе. Различаем «нет подтверждающих
+/// источников» (модель корректно отказалась) от технических ошибок
+/// поиска или LLM. UI показывает соответствующее сообщение.
+/// </summary>
+public enum RagAbstentionReason
+{
+    /// <summary>Ответ дан; abstention не сработал.</summary>
+    None = 0,
+    /// <summary>Поиск не выполнен (embedding, индекс или HTTP).</summary>
+    SearchError = 1,
+    /// <summary>Поиск выполнен, но кандидаты отклонены по threshold или пусты.</summary>
+    NoEvidence = 2,
+    /// <summary>LLM не вернул ответ (таймаут или исключение).</summary>
+    LlmError = 3,
+    /// <summary>LLM вернул ответ, но без валидных цитат и подтверждающих цитат.</summary>
+    UnsupportedAnswer = 4,
+}
+
+/// <summary>
+/// Цитата, на которую ссылается модель. Источник и chunk_id
+/// обязаны указывать на реальный чанк из контекста; цитата —
+/// дословный фрагмент из <see cref="RagSource.Text"/>.
+/// </summary>
+public sealed record RagCitation(
+    string ChunkId,
+    string Source,
+    string Section,
+    int? PdfPage,
+    string Quote,
+    bool Verified)
+{
+    /// <summary>Короткая подпись источника для UI и отчётов.</summary>
+    public string Reference
+    {
+        get
+        {
+            var page = PdfPage is int p ? $", стр. {p}" : "";
+            return $"[{Source}{page}, {ChunkId}]";
+        }
+    }
+}
+
+/// <summary>
 /// Одна запись об отклонённом после фильтра чанке с фактической причиной.
 /// Помогает UI и автотесту видеть, почему кандидат не попал в контекст.
 /// </summary>
@@ -47,6 +90,9 @@ public sealed record RagSearchTrace(
 /// Источники пустые — значит поиск был пустым или упал, и подтверждённого
 /// факта в ответе нет. Поле <see cref="Trace"/> содержит фактический
 /// журнал поиска (может быть null, если поиск не выполнялся).
+/// Поля <see cref="Citations"/>, <see cref="Abstained"/> и
+/// <see cref="AbstentionReason"/> добавлены на День 24 для обязательных
+/// цитат и явного «Не знаю» при отсутствии доказательств.
 /// </summary>
 public sealed record RagAnswer(
     string Question,
@@ -55,7 +101,15 @@ public sealed record RagAnswer(
     int RetrievedCount,
     IReadOnlyList<RagSource> Sources,
     string? Error,
-    RagSearchTrace? Trace = null);
+    RagSearchTrace? Trace = null,
+    IReadOnlyList<RagCitation>? Citations = null,
+    bool Abstained = false,
+    RagAbstentionReason AbstentionReason = RagAbstentionReason.None,
+    string? ClarificationQuestion = null)
+{
+    /// <summary>Фактический список цитат без null.</summary>
+    public IReadOnlyList<RagCitation> CitationsSafe => Citations ?? Array.Empty<RagCitation>();
+}
 
 /// <summary>
 /// Ответ «без RAG»: только текст модели, никакого поиска.
@@ -63,7 +117,20 @@ public sealed record RagAnswer(
 public sealed record NoRagAnswer(
     string Question,
     string Answer,
-    string? Error);
+    string? Error,
+    bool Abstained = false,
+    RagAbstentionReason AbstentionReason = RagAbstentionReason.None,
+    string? ClarificationQuestion = null);
+
+/// <summary>
+/// Стандартизованное сообщение abstention для RAG. Используется
+/// моделью и валидатором, когда подтверждающих источников нет.
+/// </summary>
+public static class RagAbstentionMessages
+{
+    public const string Russian = "Не знаю";
+    public const string DefaultClarification = "Уточните, пожалуйста, вопрос — текущих данных в индексе недостаточно для подтверждённого ответа.";
+}
 
 /// <summary>
 /// Параметры одного RAG-запроса. Не мутируют singleton RagOptions —
@@ -96,7 +163,9 @@ public sealed record AutoTestCase(
     int? ExpectedPdfPage,
     string? ExpectedSectionContains,
     IReadOnlyList<string>? ExpectedFactTerms,
-    bool ExpectedNoEvidence = false);
+    bool ExpectedNoEvidence = false,
+    string? ExpectedKind = null,
+    IReadOnlyList<string>? ForbiddenTerms = null);
 
 /// <summary>
 /// Запуск одного вопроса в одном режиме: оценка плюс детальные
@@ -106,6 +175,23 @@ public sealed record AutoTestCase(
 /// позиционный аргумент со значением по умолчанию, чтобы старые
 /// тесты и вызовы с 16 аргументами продолжали компилироваться
 /// без изменений.
+/// Поля <see cref="Citations"/>, <see cref="QuoteCheckPassed"/>,
+/// <see cref="AnswerSupportedByQuotes"/>, <see cref="Abstained"/>
+/// и <see cref="AbstentionReason"/> добавлены на День 24 для
+/// обязательных цитат и проверки «Не знаю».
+/// <para>Поле <see cref="IsDay24Evaluation"/> — флаг «это День 24»,
+/// который выставляется <see cref="AutoTestRunner"/> по
+/// <c>questions.json</c> с <c>version=day24-*</c> или имени файла с
+/// <c>day24</c>. Используется в <see cref="Passed"/> для
+/// дополнительной проверки <c>QuoteCheckPassed</c> и
+/// <c>AnswerSupportedByQuotes</c> на позитивных кейсах Дня 24 и для
+/// ужесточения требований к негативным кейсам Дня 24 (явная фраза
+/// «Не знаю» + уточняющий вопрос + отсутствие запрещённых
+/// фактов). По умолчанию <c>false</c> — старые режимы
+/// «сравнения» сохраняют прежнюю семантику.</para>
+/// <para>Поле <see cref="ClarificationQuestion"/> хранит
+/// фактический уточняющий вопрос от модели, если она abstentionила;
+/// используется в негативных кейсах Дня 24.</para>
 /// </summary>
 public sealed record AutoTestRunResult(
     int Index,
@@ -125,7 +211,18 @@ public sealed record AutoTestRunResult(
     bool SourceCheckPassed,
     bool SectionCheckPassed,
     string? Error,
-    RagSearchTrace? Trace = null)
+    RagSearchTrace? Trace = null,
+    IReadOnlyList<RagCitation>? Citations = null,
+    bool QuoteCheckPassed = false,
+    bool AnswerSupportedByQuotes = false,
+    bool Abstained = false,
+    RagAbstentionReason AbstentionReason = RagAbstentionReason.None,
+    string? ExpectedKind = null,
+    IReadOnlyList<string>? ForbiddenTerms = null,
+    IReadOnlyList<string>? FoundForbiddenTerms = null,
+    bool ForbiddenTermsCheckPassed = true,
+    string? ClarificationQuestion = null,
+    bool IsDay24Evaluation = false)
 {
     /// <summary>
     /// Кейс «негативный»: явный флаг <c>ExpectedNoEvidence=true</c> в
@@ -134,8 +231,26 @@ public sealed record AutoTestRunResult(
     /// </summary>
     public bool IsNegativeCase => ExpectedNoEvidence;
 
+    /// <summary>День 24 — позитивный кейс: выставлен файл Day 24 и нет <c>ExpectedNoEvidence</c>.</summary>
+    public bool IsDay24PositiveCase => IsDay24Evaluation && !IsNegativeCase;
+
+    /// <summary>День 24 — негативный кейс: выставлен файл Day 24 и есть <c>ExpectedNoEvidence</c>.</summary>
+    public bool IsDay24NegativeCase => IsDay24Evaluation && IsNegativeCase;
+
     /// <summary>Стандартная фраза abstention, которую должна выдать модель при отсутствии фактов в индексе.</summary>
     public const string NoFactsAnswerPhrase = "Подтверждённых фактов в индексе не найдено";
+
+    /// <summary>День 24 — стандартная фраза abstention «Не знаю».</summary>
+    public const string Day24AbstentionPhrase = "Не знаю";
+
+    /// <summary>Фактический список цитат без null.</summary>
+    public IReadOnlyList<RagCitation> CitationsSafe => Citations ?? Array.Empty<RagCitation>();
+
+    /// <summary>Фактический список нарушенных запрещённых терминов без null.</summary>
+    public IReadOnlyList<string> FoundForbiddenTermsSafe => FoundForbiddenTerms ?? Array.Empty<string>();
+
+    /// <summary>Фактический список ожидаемых запрещённых терминов без null.</summary>
+    public IReadOnlyList<string> ForbiddenTermsSafe => ForbiddenTerms ?? Array.Empty<string>();
 
     /// <summary>
     /// Считает, является ли ответ модели воздержанием от фактов.
@@ -149,6 +264,7 @@ public sealed record AutoTestRunResult(
         {
             if (FoundFactTerms.Count > 0) return false;
             if (string.IsNullOrWhiteSpace(Answer)) return true;
+            if (Answer.Contains(Day24AbstentionPhrase, StringComparison.OrdinalIgnoreCase)) return true;
             return Answer.Contains(NoFactsAnswerPhrase, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -158,9 +274,40 @@ public sealed record AutoTestRunResult(
     {
         get
         {
+            // Любая техническая ошибка — это провал, без вариантов.
             if (Error is not null) return false;
 
-            // Явный негативный кейс: критерии другие.
+            // День 24: позитивный кейс требует SearchSucceeded,
+            // отсутствия abstention, фактов, корректных источника/секции,
+            // подтверждённой цитаты, поддержки ответа цитатами и
+            // отсутствия запрещённых терминов.
+            if (IsDay24PositiveCase)
+            {
+                return SearchSucceeded
+                    && !Abstained
+                    && FactCheckPassed
+                    && SourceCheckPassed
+                    && (ExpectedSectionContains is null || SectionCheckPassed)
+                    && QuoteCheckPassed
+                    && AnswerSupportedByQuotes
+                    && ForbiddenTermsCheckPassed;
+            }
+
+            // День 24: негативный кейс — модель должна явно написать
+            // «Не знаю» и попросить уточнить, при этом не делая
+            // «неподдерживаемых фактических утверждений». Поиск мог
+            // вернуть низкокачественные чанки (Sources.Count может быть
+            // > 0), главное — что модель всё равно abstentionила.
+            if (IsDay24NegativeCase)
+            {
+                return SearchSucceeded
+                    && Abstained
+                    && IsAbstentionAnswer
+                    && !string.IsNullOrWhiteSpace(ClarificationQuestion)
+                    && ForbiddenTermsCheckPassed;
+            }
+
+            // Legacy / режим «сравнения»: сохраняем старую семантику.
             if (IsNegativeCase)
             {
                 if (Mode == "no-rag")
@@ -172,9 +319,14 @@ public sealed record AutoTestRunResult(
                 return SearchSucceeded && Sources.Count == 0 && IsAbstentionAnswer;
             }
 
+            // Legacy позитивный кейс: проверки терминов, источника,
+            // секции (если задана) и запрещённых терминов.
+            // QuoteCheckPassed/AnswerSupportedByQuotes НЕ требуются
+            // — это ужесточение только для Дня 24.
             return FactCheckPassed
                 && SourceCheckPassed
-                && (ExpectedSectionContains is null || SectionCheckPassed);
+                && (ExpectedSectionContains is null || SectionCheckPassed)
+                && ForbiddenTermsCheckPassed;
         }
     }
 }

@@ -1,0 +1,84 @@
+{
+    "version": "day24-v2",
+    "description": "Dedicated 10-question evaluation set for Day 24 RAG autotest. Replaces the legacy external questions.json. Includes STLB-OK1 -> revit-703 only (positive, source=confluence_html), neighbouring server columns revit-702/704 (positive, source=confluence_html), Revit version question (no inference from 'Projects 2022'), no-evidence / ambiguity cases (no expected_source — abstention expected), and KB positive questions (Confluence KB page 'Не удалось построить ленту' / 'Программа Autodesk Revit не работает', and PDF page 3 'RSN.ini'). HTML table questions use confluence_html (matches actual chunk source emitted by confluence_html.py), not legacy 'confluence'. Negative no-evidence cases intentionally have no expected_source because abstention answers produce no source match.",
+    "questions": [
+        {
+            "question": "На каком сервере находится проект STLB-OK1?",
+            "expected_source": "confluence_html",
+            "expected_section_contains": "revit-703",
+            "expected_fact_terms": ["revit-703", "STLB-OK1"],
+            "forbidden_terms": ["revit-702", "revit-704"],
+            "expected_kind": "stlb"
+        },
+        {
+            "question": "Где именно в таблице Confluence указан STLB-OK1, на каком сервере?",
+            "expected_source": "confluence_html",
+            "expected_section_contains": "revit-703",
+            "expected_fact_terms": ["revit-703"],
+            "forbidden_terms": ["revit-702", "revit-704"],
+            "expected_kind": "stlb"
+        },
+        {
+            "question": "На каком сервере находится проект PRKS-SD2?",
+            "expected_source": "confluence_html",
+            "expected_section_contains": "revit-702",
+            "expected_fact_terms": ["revit-702", "PRKS-SD2"],
+            "forbidden_terms": ["STLB-OK1"],
+            "expected_kind": "neighbour_column_702"
+        },
+        {
+            "question": "На каком сервере находится проект PRKS-PL1?",
+            "expected_source": "confluence_html",
+            "expected_section_contains": "revit-704",
+            "expected_fact_terms": ["revit-704", "PRKS-PL1"],
+            "forbidden_terms": ["STLB-OK1"],
+            "expected_kind": "neighbour_column_704"
+        },
+        {
+            "question": "Какая версия Revit указана в строке Projects 2022 таблицы серверов?",
+            "expected_section_contains": "",
+            "expected_fact_terms": [],
+            "expected_no_evidence": true,
+            "forbidden_terms": ["2022", "Revit 2022", "версия 2022"],
+            "expected_kind": "no_version_inference"
+        },
+        {
+            "question": "На каком сервере в таблице Confluence указан проект с шифром ГГЖ-ПР1?",
+            "expected_section_contains": "",
+            "expected_fact_terms": [],
+            "expected_no_evidence": true,
+            "forbidden_terms": ["revit-702", "revit-703", "revit-704"],
+            "expected_kind": "unknown_project"
+        },
+        {
+            "question": "Какой проект из таблицы Projects 2022 связан с revit-703 и revit-704 одновременно?",
+            "expected_section_contains": "",
+            "expected_fact_terms": [],
+            "expected_no_evidence": true,
+            "forbidden_terms": ["STLB-OK1"],
+            "expected_kind": "ambiguity_project_on_two_servers"
+        },
+        {
+            "question": "Что делать при ошибке «Не удалось построить ленту» во время расчёта контура?",
+            "expected_source": "confluence",
+            "expected_section_contains": "Решение",
+            "expected_fact_terms": ["контур"],
+            "expected_kind": "kb_positive"
+        },
+        {
+            "question": "Куда обращаться, если программа Autodesk Revit не работает?",
+            "expected_source": "confluence",
+            "expected_section_contains": "Программа Autodesk Revit не работает",
+            "expected_fact_terms": ["IT", "BIM-координатор"],
+            "expected_kind": "kb_positive"
+        },
+        {
+            "question": "Нужен ли отдельный файл RSN.ini для каждой версии Revit?",
+            "expected_source": "pdf",
+            "expected_pdf_page": 3,
+            "expected_section_contains": "RSN.ini",
+            "expected_fact_terms": ["RSN.ini", "версии"],
+            "expected_kind": "kb_positive_pdf"
+        }
+    ]
+}

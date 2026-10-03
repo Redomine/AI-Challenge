@@ -445,13 +445,26 @@ def build_chunks(
         # Сохраняем порядок юнитов из входа, но PDF-юниты чанкуем
         # постранично, чтобы не пересекать границы страниц и
         # сохранить ``pdf_page`` как валидную ground-truth метку.
-        # Confluence-юниты склеиваются в общий поток и чанкуются
-        # скользящим окном.
-        cf_units = [u for u in units if u.source != "pdf"]
-        if cf_units:
+        # Не-PDF-юниты (``confluence`` и ``confluence_html``) идут
+        # отдельными потоками по источнику, чтобы ``chunk.source``
+        # корректно отражал происхождение — без этого смешение
+        # потоков затирало бы ``source`` у первой группы.
+        # Порядок групп фиксируется по первому юниту каждого
+        # источника в исходном списке.
+        seen_sources: List[str] = []
+        for u in units:
+            if u.source == "pdf":
+                continue
+            if u.source not in seen_sources:
+                seen_sources.append(u.source)
+
+        for source_name in seen_sources:
+            source_units = [u for u in units if u.source == source_name]
+            if not source_units:
+                continue
             cf_chunks, n = _build_fixed_chunks_for_stream(
-                source=cf_units[0].source,
-                units=cf_units,
+                source=source_name,
+                units=source_units,
                 target_words=fixed_target_words,
                 overlap_words=fixed_overlap_words,
                 base_index=idx,

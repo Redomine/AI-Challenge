@@ -35,11 +35,12 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton(sp =>
 {
-    var questionsPath = ResolveQuestionsPath(
-        sp.GetRequiredService<IWebHostEnvironment>().ContentRootPath);
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    var questionsPath = ResolveQuestionsPath(env.ContentRootPath, env.WebRootPath);
+    var fallbackPath = ResolveLegacyQuestionsPath();
     var noRag = sp.GetRequiredService<NoRagAnswerService>();
     var rag = sp.GetRequiredService<RagAnswerService>();
-    return new AutoTestRunner(noRag, rag, questionsPath);
+    return new AutoTestRunner(noRag, rag, questionsPath, fallbackPath);
 });
 builder.Services.AddSingleton(sp =>
 {
@@ -54,6 +55,45 @@ if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != 
 }
 
 var app = builder.Build();
+if (args is ["--run-day24-eval"])
+{
+    var runner = app.Services.GetRequiredService<AutoTestRunner>();
+    var options = app.Services.GetRequiredService<RagOptions>();
+    var cases = await runner.LoadCasesAsync(CancellationToken.None);
+    var report = await runner.RunAggregateAsync(
+        cases,
+        baseline: options.ToProductionSettings(),
+        enhanced: null,
+        includeNoRag: false,
+        progress: null,
+        cancellationToken: CancellationToken.None);
+    var runs = report.Runs.Select(r => new
+    {
+        r.Index, r.Question, r.Answer, r.Passed, r.SearchSucceeded,
+        r.Abstained, r.AbstentionReason, r.ClarificationQuestion,
+        r.QuoteCheckPassed, r.AnswerSupportedByQuotes,
+        r.FactCheckPassed, r.SourceCheckPassed, r.SectionCheckPassed,
+        r.ForbiddenTermsCheckPassed, r.Error,
+        Sources = r.Sources.Select(s => new
+        {
+            s.ChunkId, s.Source, s.Section, s.PdfPage, s.Score
+        }),
+        Citations = r.CitationsSafe.Select(c => new
+        {
+            c.ChunkId, c.Source, c.Section, c.PdfPage, c.Quote, c.Verified
+        })
+    }).ToArray();
+    var outputPath = Path.Combine(Path.GetDirectoryName(options.IndexPath)!,
+        $"rag-evaluation-day24-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+    await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(new
+    {
+        Questions = cases.Count,
+        Passed = report.Runs.Count(r => r.Passed),
+        Results = runs
+    }, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine($"Day 24 evaluation: {outputPath}");
+    return;
+}
 if (args is ["--run-rag-eval"])
 {
     var runner = app.Services.GetRequiredService<AutoTestRunner>();
@@ -181,10 +221,25 @@ app.UseAntiforgery();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 app.Run();
 
-static string ResolveQuestionsPath(string contentRoot)
+static string ResolveQuestionsPath(string contentRoot, string webRoot)
 {
+    // 1. Явный override через env остаётся высшим приоритетом — это
+    // используется CLI-режимом --run-rag-eval и тестами.
     var explicitPath = Environment.GetEnvironmentVariable("RAG_QUESTIONS_PATH");
     if (!string.IsNullOrWhiteSpace(explicitPath)) return explicitPath;
+    // 2. Dedicated Day 24 JSON в wwwroot/app-data — приоритетный набор.
+    // Файл пакуется в Web output и доступен, когда приложение запущено
+    // из каталога проекта (wwwroot резолвится через ContentRoot/WebRoot).
+    var embeddedPath = Path.Combine(webRoot ?? contentRoot, "app-data", "questions-day24.json");
+    if (File.Exists(embeddedPath)) return embeddedPath;
+    var contentRootAltPath = Path.Combine(contentRoot, "wwwroot", "app-data", "questions-day24.json");
+    if (File.Exists(contentRootAltPath)) return contentRootAltPath;
+    // 3. Фолбэк: легаси-путь для совместимости.
+    return ResolveLegacyQuestionsPath();
+}
+
+static string ResolveLegacyQuestionsPath()
+{
     return Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
         "Выгрузка страниц", "index_out", "questions.json");

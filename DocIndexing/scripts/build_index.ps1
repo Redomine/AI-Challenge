@@ -20,6 +20,7 @@
 [CmdletBinding()]
 param(
     [string] $ConfluenceJson = $null,
+    [string] $ConfluenceHtml = $null,
     [string] $PdfPath = $null,
     [string] $OutputDir = $null,
     [string] $OllamaUrl = 'http://127.0.0.1:11434',
@@ -48,6 +49,7 @@ $env:PYTHONPATH = (Join-Path $repoDir 'src')
 
 $argsList = @('-m', 'docindexing', 'build')
 if ($ConfluenceJson) { $argsList += @('--confluence-json', $ConfluenceJson) }
+if ($ConfluenceHtml) { $argsList += @('--confluence-html', $ConfluenceHtml) }
 if ($PdfPath) { $argsList += @('--pdf', $PdfPath) }
 if ($OutputDir) { $argsList += @('--output-dir', $OutputDir) }
 $argsList += @('--ollama-url', $OllamaUrl)
