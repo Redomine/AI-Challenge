@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using DesignerAssistant.Llm;
 using DesignerAssistant.Models;
 
@@ -37,8 +38,10 @@ public sealed class RagAnswerService
         - chunk_id, source и section/pdf_page бери ИЗ метаданных коллекции (см. «Метаданные коллекции»).
         - quote — это ДОСЛОВНЫЙ фрагмент из контекста, не перефразирование и не суммаризация.
         - Для quote скопируй короткий непрерывный фрагмент (5–20 слов) из ОДНОГО чанка. Не соединяй предложения из разных мест и не убирай слова или знаки препинания внутри цитаты.
+        - Если отвечаешь о сервере, проекте или годе, цитируй всю строку чанка от «Сервер:» до «Год:», а не только шифр проекта. Для списка проектов дай отдельную такую цитату на каждый проект.
         - Если в контексте нет подтверждающих фактов — ответь ровно «Не знаю» (ANSWER) и оставь QUOTES пустым. Не выдумывай цитаты.
         - Не указывай версию Revit, если её нет в цитате.
+        - Если подтверждена только часть составного вопроса, ответь на эту часть и явно назови неподтверждённую. Заголовок «Проекты 2022» не доказывает версию Revit 2022.
         - Сохраняй кириллицу, имена проектов и идентификаторы дословно.
         """;
 
@@ -81,6 +84,13 @@ public sealed class RagAnswerService
     public async Task<RagAnswer> AskAsync(
         string question,
         RagRunSettings settings,
+        CancellationToken cancellationToken) =>
+        await AskAsync(question, settings, null, cancellationToken);
+
+    public async Task<RagAnswer> AskAsync(
+        string question,
+        RagRunSettings settings,
+        string? answerContext,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -105,6 +115,10 @@ public sealed class RagAnswerService
         string? searchError = null;
         string? rewriteError = null;
         string searchQuery = originalQuestion;
+        var exactServer = ExactServerTerm(originalQuestion);
+        var exactProject = Regex.IsMatch(originalQuestion, @"сервер|где\s+.*проект|в\s+каком\s+разделе",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            ? ExactProjectTerm(originalQuestion) : null;
 
         try
         {
@@ -133,7 +147,7 @@ public sealed class RagAnswerService
                     searchQuery,
                     _options.EmbedModel,
                     cancellationToken);
-                var preHits = reader.Search(vec, settings.PreFilterK);
+                var preHits = reader.Search(vec, settings.PreFilterK, exactServer ?? exactProject);
                 var filtered = ApplyScoreAndLimit(settings.PreFilterK, settings.PostFilterK, settings.ScoreThreshold, preHits);
                 sources = filtered.Sources;
                 trace = trace with
@@ -155,13 +169,20 @@ public sealed class RagAnswerService
             searchError = ex.Message;
         }
 
+        if (searchOk && sources.Count > 0 &&
+            TryBuildServerProjectAnswer(originalQuestion, answerContext, exactServer, sources, trace, out var tableAnswer))
+            return tableAnswer;
+        if (searchOk && sources.Count > 0 &&
+            TryBuildProjectServerAnswer(originalQuestion, exactProject, sources, trace, out var projectAnswer))
+            return projectAnswer;
+
         string rawAnswer;
         string? llmError = null;
         try
         {
             using var llmCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             llmCts.CancelAfter(_options.LlmTimeout);
-            var prompt = BuildPrompt(originalQuestion, sources);
+            var prompt = BuildPrompt(string.IsNullOrWhiteSpace(answerContext) ? originalQuestion : answerContext, sources);
             var response = await _llm.GenerateAsync(
                 Instructions,
                 new[] { new ChatMessage("user", prompt) },
@@ -288,9 +309,17 @@ public sealed class RagAnswerService
                 new[] { searchError, llmError, rewriteError }
                     .Where(s => !string.IsNullOrWhiteSpace(s)))
         };
+        var cleanAnswer = string.IsNullOrWhiteSpace(validated.CleanAnswer) ? rawAnswer : validated.CleanAnswer;
+        if (Regex.IsMatch(originalQuestion, @"верси\w*\s+ревита|верси\w*\s+Revit|Revit\s+20\d\d",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) &&
+            sources.All(s => !Regex.IsMatch(s.Text, @"верси\w*\s+Revit|Revit\s+20\d\d",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)))
+        {
+            cleanAnswer = cleanAnswer.TrimEnd() + " В приведённых записях версия Revit не указана; «Проекты 2022» обозначает раздел таблицы.";
+        }
         return new RagAnswer(
             Question: originalQuestion,
-            Answer: string.IsNullOrWhiteSpace(validated.CleanAnswer) ? rawAnswer : validated.CleanAnswer,
+            Answer: cleanAnswer,
             SearchSucceeded: true,
             RetrievedCount: sources.Count,
             Sources: sources,
@@ -476,4 +505,87 @@ public sealed class RagAnswerService
         sources.Count == 0
             ? RagAbstentionMessages.Russian
             : "Не удалось получить ответ модели; найденные фрагменты приведены ниже.";
+
+    private static string? ExactServerTerm(string question)
+    {
+        var match = Regex.Match(question,
+            @"\b(?:revit[-\s]*|сервер(?:е|а|у|ом)?\s+)(\d{3,4})\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? $"revit-{match.Groups[1].Value}" : null;
+    }
+
+    private static string? ExactProjectTerm(string question)
+    {
+        var match = Regex.Match(question, @"\b[A-ZА-Я]{2,}[A-ZА-Я0-9]*-[A-ZА-Я0-9][A-ZА-Я0-9.-]*\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success && !match.Value.StartsWith("revit-", StringComparison.OrdinalIgnoreCase)
+            ? match.Value : null;
+    }
+
+    private static readonly Regex ServerProjectRow = new(
+        @"Сервер:\s*(revit-\d+)\.\s*Проект:\s*(.+?)\.\s*Год:\s*(Проекты\s+\d{4})",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static bool TryBuildProjectServerAnswer(
+        string question, string? exactProject, IReadOnlyList<RagSource> sources,
+        RagSearchTrace trace, out RagAnswer answer)
+    {
+        answer = null!;
+        if (exactProject is null || !Regex.IsMatch(question,
+                @"сервер|где\s+.*проект|в\s+каком\s+разделе",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return false;
+
+        var entries = sources.Select(source => (Source: source, Match: ServerProjectRow.Match(source.Text)))
+            .Where(e => e.Match.Success && string.Equals(e.Match.Groups[2].Value, exactProject,
+                StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (entries.Length == 0) return false;
+        var citations = entries.Select(e => new RagCitation(e.Source.ChunkId, e.Source.Source,
+            e.Source.Section, e.Source.PdfPage, e.Match.Value, true)).ToArray();
+        var locations = entries.Select(e =>
+            $"{e.Match.Groups[1].Value} в разделе «{e.Match.Groups[3].Value}»")
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var text = $"Проект {exactProject} указан на сервере {string.Join("; ", locations)}.";
+        answer = new RagAnswer(question, text, true, sources.Count, sources, null, trace, citations);
+        return true;
+    }
+
+    private static bool TryBuildServerProjectAnswer(
+        string question, string? answerContext, string? exactServer, IReadOnlyList<RagSource> sources,
+        RagSearchTrace trace, out RagAnswer answer)
+    {
+        answer = null!;
+        if (exactServer is null || !Regex.IsMatch(question, @"\bкакие\s+проекты\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return false;
+
+        var entries = new List<(string Project, string Year, RagSource Source, string Quote)>();
+        foreach (var source in sources)
+        {
+            var match = ServerProjectRow.Match(source.Text);
+            if (match.Success && string.Equals(match.Groups[1].Value, exactServer, StringComparison.OrdinalIgnoreCase))
+                entries.Add((match.Groups[2].Value, match.Groups[3].Value, source, match.Value));
+        }
+        if (entries.Count == 0) return false;
+
+        var year = Regex.Match(question, @"\b20\d{2}\b").Value;
+        if (year.Length > 0 && entries.Any(e => e.Year.EndsWith(year, StringComparison.Ordinal)))
+            entries = entries.Where(e => e.Year.EndsWith(year, StringComparison.Ordinal)).ToList();
+        var citations = entries.Select(e => new RagCitation(
+            e.Source.ChunkId, e.Source.Source, e.Source.Section, e.Source.PdfPage, e.Quote, true)).ToArray();
+        var requestedYears = answerContext is null ? [] : Regex.Matches(answerContext, @"\b(20\d{2})\s*:")
+            .Select(match => match.Groups[1].Value).Distinct(StringComparer.Ordinal).ToArray();
+        var yearFormat = requestedYears.Length >= 2;
+        var byYear = entries.GroupBy(e => e.Year)
+            .OrderBy(group => yearFormat ? Array.IndexOf(requestedYears, group.Key[^4..]) : int.MaxValue)
+            .ThenBy(group => group.Key, StringComparer.Ordinal).ToArray();
+        var text = yearFormat
+            ? string.Join("\n", byYear.Select(group =>
+                $"{group.Key["Проекты ".Length..]}: {string.Join(", ", group.Select(e => e.Project).Distinct(StringComparer.OrdinalIgnoreCase))}"))
+            : $"В найденных записях для {exactServer} указаны проекты {string.Join("; ", byYear.Select(group =>
+                $"в разделе «{group.Key}»: {string.Join(", ", group.Select(e => e.Project).Distinct(StringComparer.OrdinalIgnoreCase))}"))}.";
+        if (Regex.IsMatch(question, @"верси\w*\s+ревита|верси\w*\s+Revit|Revit\s+20\d\d",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            text += " Эти записи не указывают версию Revit; год в названии раздела не является подтверждением версии.";
+        answer = new RagAnswer(question, text, true, sources.Count, sources, null, trace, citations);
+        return true;
+    }
 }

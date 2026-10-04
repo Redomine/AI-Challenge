@@ -5,6 +5,8 @@
 @inject IWebHostEnvironment Environment
 @inject RagQueryService RagQuery
 @inject AutoTestRunner AutoTest
+@inject RagMiniChatService MiniChat
+@inject RagMiniChatScenarioRunner MiniChatTest
 
 <PageTitle>BIM Assistant</PageTitle>
 
@@ -18,6 +20,7 @@
         <nav class="primary-nav" aria-label="Разделы">
             <button class="@NavClass("chat")" @onclick='@(() => OpenSection("chat"))'>Чат</button>
             <button class="@NavClass("rag")" @onclick='@(() => OpenSection("rag"))'>RAG-чат</button>
+            <button class="@NavClass("minichat")" @onclick="OpenMiniChatAsync">Mini-чат</button>
             <button class="@NavClass("profiles")" @onclick="OpenProfilesAsync">Профили</button>
             <button class="@NavClass("prompt")" @onclick='@(() => OpenSection("prompt"))'>Базовый prompt</button>
             <button class="@NavClass("invariants")" @onclick="OpenInvariantsAsync">Инварианты</button>
@@ -292,12 +295,13 @@
                     <header>
                         <div>
                             <strong>Автотест RAG</strong>
-                            <p class="muted">«Обычный автотест» — legacy-прогон no-rag vs rag. «Сравнить режимы» — Day 23: no-rag, baseline и enhanced (rewrite + pre-K + threshold + post-K). «Тест День 24» — production-настройки с проверкой цитат и abstention «Не знаю».</p>
+                            <p class="muted">«Обычный автотест» — legacy-прогон no-rag vs rag. «Сравнить режимы» — Day 23: no-rag, baseline и enhanced (rewrite + pre-K + threshold + post-K). «Тест День 24» — production-настройки с проверкой цитат и abstention «Не знаю». «Тест День 25» — два 10–15-репликовых сценария против RagMiniChatService: нормативы офиса (12) и серверы Revit (10) с проверкой цитат и abstain.</p>
                         </div>
                         <div class="rag-composer-actions">
                             <button class="secondary" @onclick="RunLegacyAutoTestAsync" disabled="@_ragBusy">Обычный автотест</button>
                             <button class="secondary" @onclick="RunCompareModesAsync" disabled="@_ragBusy">Сравнить режимы</button>
                             <button class="primary" @onclick="RunDay24TestAsync" disabled="@_ragBusy">Тест День 24</button>
+                            <button class="primary" @onclick="RunDay25TestAsync" disabled="@(_ragBusy || _miniChatBusy)">Тест День 25</button>
                             @if (_autoTestCancellation is not null)
                             {
                                 <button class="secondary" @onclick="CancelAutoTest">Остановить</button>
@@ -475,7 +479,293 @@
                             </ol>
                         </details>
                     }
+                    @if (_day25Report is not null)
+                    {
+                        var d25 = _day25Report;
+                        <div class="rag-summary">
+                            <span class="rag-check @(d25.OverallPassed ? "ok" : "fail")"><strong>@(d25.OverallPassed ? "Тест День 25 пройден" : "Тест День 25 провален")</strong></span>
+                            <span>Сценариев: <strong>@d25.ScenarioPassed/@d25.ScenarioTotal</strong></span>
+                            <span>Шагов: <strong>@d25.StepPassed/@d25.StepTotal</strong></span>
+                            <span class="muted">Ошибок: @d25.StepErrors</span>
+                            <span class="muted">Abstain: @d25.StepAbstained</span>
+                            <span class="muted">Длительность: @((int)d25.Duration.TotalSeconds) с</span>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(d25.Error))
+                        {
+                            <div class="rag-error">@d25.Error</div>
+                        }
+                        <details class="rag-runs" open>
+                            <summary>Сценарии (День 25)</summary>
+                            <ol>
+                                @foreach (var scenario in d25.Scenarios)
+                                {
+                                    <li>
+                                        <div>
+                                            <strong>@scenario.ScenarioName</strong>
+                                            <span class="muted">conversation: <code>@scenario.ConversationId</code></span>
+                                        </div>
+                                        <div class="rag-checks">
+                                            <span class="rag-check @(scenario.Passed ? "ok" : "fail")">@(scenario.Passed ? "пройден" : "провален")</span>
+                                            <span class="rag-check @(scenario.PassedSteps == scenario.TotalSteps ? "ok" : "fail")">шагов: @scenario.PassedSteps/@scenario.TotalSteps</span>
+                                            <span class="muted">ошибок: @scenario.ErroredSteps</span>
+                                            <span class="muted">abstain: @scenario.AbstainedSteps</span>
+                                            <span class="muted">@((int)scenario.Duration.TotalSeconds) с</span>
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(scenario.Error))
+                                        {
+                                            <div class="rag-error">@scenario.Error</div>
+                                        }
+                                        <details class="rag-trace" open>
+                                            <summary>Goal / clarifications / terms (фактические из GetSession)</summary>
+                                            <ul class="rag-trace-list">
+                                                <li>Goal: <code>@scenario.CapturedGoal</code></li>
+                                                <li>Clarifications (@scenario.CapturedClarifications.Count):
+                                                    @if (scenario.CapturedClarifications.Count == 0) { <code>—</code> }
+                                                    else
+                                                    {
+                                                        <ol>
+                                                            @foreach (var c in scenario.CapturedClarifications) { <li><code>@c</code></li> }
+                                                        </ol>
+                                                    }
+                                                </li>
+                                                <li>Terms (@scenario.CapturedTerms.Count):
+                                                    @if (scenario.CapturedTerms.Count == 0) { <code>—</code> }
+                                                    else
+                                                    {
+                                                        <code>@string.Join(", ", scenario.CapturedTerms)</code>
+                                                    }
+                                                </li>
+                                            </ul>
+                                        </details>
+                                        <details>
+                                            <summary>Шаги (@scenario.Steps.Count)</summary>
+                                            <ol>
+                                                @foreach (var step in scenario.Steps)
+                                                {
+                                                    <li>
+                                                        <div>
+                                                            <strong>#@step.Index</strong>
+                                                            <span class="muted">@step.Question</span>
+                                                        </div>
+                                                        <div class="rag-checks">
+                                                            <span class="rag-check @(step.Passed ? "ok" : "fail")">@(step.Passed ? "ok" : "fail")</span>
+                                                            @if (step.Question.StartsWith("Уточняю:", StringComparison.OrdinalIgnoreCase)) { <span class="rag-check ok">уточнение</span> }
+                                                            else if (step.ExpectAbstain) { <span class="rag-check ok">ожидался abstain</span> }
+                                                            @if (!string.IsNullOrEmpty(step.ExpectCitationChunk)) { <span class="muted">чанк: <code>@step.ExpectCitationChunk</code></span> }
+                                                            <span class="muted">@step.ElapsedMs мс</span>
+                                                        </div>
+                                                        @if (!string.IsNullOrWhiteSpace(step.FailureReason))
+                                                        {
+                                                            <div class="rag-error">@step.FailureReason</div>
+                                                        }
+                                                        <pre>@step.Result.Answer</pre>
+                                                        <details class="rag-sources" open="@(step.Result.Sources.Count > 0 || step.Result.CitationsSafe.Count > 0)">
+                                                            <summary>Источники (@step.Result.Sources.Count) · цитаты (@step.Result.CitationsSafe.Count)</summary>
+                                                            @if (step.Result.CitationsSafe.Count == 0 && step.Result.Sources.Count == 0)
+                                                            {
+                                                                <p class="muted">Источников нет.</p>
+                                                            }
+                                                            @if (step.Result.CitationsSafe.Count > 0)
+                                                            {
+                                                                <ol>
+                                                                    @foreach (var c in step.Result.CitationsSafe)
+                                                                    {
+                                                                        <li>
+                                                                            <strong>@c.Reference</strong>
+                                                                            <span class="rag-check @(c.Verified ? "ok" : "fail")">@(c.Verified ? "дословно" : "НЕ найдено")</span>
+                                                                            <p style="white-space: pre-wrap;">@c.Quote</p>
+                                                                        </li>
+                                                                    }
+                                                                </ol>
+                                                            }
+                                                            @if (step.Result.Sources.Count > 0)
+                                                            {
+                                                                <details>
+                                                                    <summary>Все источники (@step.Result.Sources.Count)</summary>
+                                                                    <ol>
+                                                                        @foreach (var src in step.Result.Sources)
+                                                                        {
+                                                                            <li>
+                                                                                <div><strong>@src.Title</strong> <span class="muted">@src.Source@(src.PdfPage is int p ? $" · стр. {p}" : "")</span> <span class="muted">score @src.Score.ToString("F3")</span></div>
+                                                                                <small class="muted">@src.Section</small>
+                                                                                <p>@src.Text</p>
+                                                                            </li>
+                                                                        }
+                                                                    </ol>
+                                                                </details>
+                                                            }
+                                                        </details>
+                                                    </li>
+                                                }
+                                            </ol>
+                                        </details>
+                                    </li>
+                                }
+                            </ol>
+                        </details>
+                    }
                 </article>
+            </section>
+        }
+        else if (_section == "minichat")
+        {
+            <header class="workspace-header">
+                <div>
+                    <h1>Mini-чат (День 25)</h1>
+                    <p>Беседа на каждую тему с целью, уточнениями и терминами. Полная история реплик сохраняется, в контекст уходит окно последних 6 реплик.</p>
+                </div>
+                <div class="rag-composer-actions">
+                    <span class="rag-status">@_miniChatStatus</span>
+                    <div class="composer-buttons">
+                        <button class="secondary" @onclick="ResetMiniChatAsync" disabled="@_miniChatBusy">Новая беседа</button>
+                        <button class="primary" @onclick="SendMiniChatAsync" disabled="@(_miniChatBusy || string.IsNullOrWhiteSpace(_miniChatQuestion))">Отправить</button>
+                    </div>
+                </div>
+            </header>
+            <section class="minichat-layout">
+                <aside class="minichat-state">
+                    <div class="minichat-state-block">
+                        <label>Цель беседы</label>
+                        <textarea @bind="_miniChatGoal" @bind:event="oninput" rows="3" placeholder="Например: собрать нормативные требования к офису" disabled="@_miniChatBusy"></textarea>
+                        <button class="secondary" @onclick="SaveMiniChatGoalAsync" disabled="@_miniChatBusy">Сохранить цель</button>
+                    </div>
+                    <div class="minichat-state-block">
+                        <label>Уточнения</label>
+                        @if (_miniChatSession is null || _miniChatSession.State.Clarifications.Count == 0)
+                        {
+                            <p class="muted">Пока нет уточнений.</p>
+                        }
+                        else
+                        {
+                            <ul class="minichat-list">
+                                @for (var i = 0; i < _miniChatSession.State.Clarifications.Count; i++)
+                                {
+                                    var index = i;
+                                    <li>
+                                        <span>@_miniChatSession.State.Clarifications[index]</span>
+                                        <button class="secondary minichat-remove" title="Удалить уточнение" aria-label="Удалить уточнение" @onclick="() => RemoveMiniChatClarificationAsync(index)" disabled="@_miniChatBusy">×</button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        <div class="minichat-add">
+                            <input @bind="_miniChatNewClarification" placeholder="Новое уточнение" disabled="@_miniChatBusy" />
+                            <button class="secondary minichat-add-button" title="Добавить уточнение" aria-label="Добавить уточнение" @onclick="AddMiniChatClarificationAsync" disabled="@(_miniChatBusy || string.IsNullOrWhiteSpace(_miniChatNewClarification))">+</button>
+                        </div>
+                    </div>
+                    <div class="minichat-state-block">
+                        <label>Термины / ограничения</label>
+                        @if (_miniChatSession is null || _miniChatSession.State.Terms.Count == 0)
+                        {
+                            <p class="muted">Пока нет терминов.</p>
+                        }
+                        else
+                        {
+                            <ul class="minichat-list">
+                                @for (var i = 0; i < _miniChatSession.State.Terms.Count; i++)
+                                {
+                                    var index = i;
+                                    <li>
+                                        <span>@_miniChatSession.State.Terms[index]</span>
+                                        <button class="secondary minichat-remove" title="Удалить термин" aria-label="Удалить термин" @onclick="() => RemoveMiniChatTermAsync(index)" disabled="@_miniChatBusy">×</button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        <div class="minichat-add">
+                            <input @bind="_miniChatNewTerm" placeholder="Через запятую или по одному" disabled="@_miniChatBusy" />
+                            <button class="secondary minichat-add-button" title="Добавить термин" aria-label="Добавить термин" @onclick="AddMiniChatTermsAsync" disabled="@(_miniChatBusy || string.IsNullOrWhiteSpace(_miniChatNewTerm))">+</button>
+                        </div>
+                    </div>
+                </aside>
+                <article class="minichat-transcript">
+                    <header>
+                        <strong>Транскрипт беседы</strong>
+                        <span class="muted">@_miniChatConversationId · @(_miniChatSession?.TurnCount ?? 0) реплик</span>
+                    </header>
+                    @if (_miniChatSession is null || _miniChatSession.TurnCount == 0)
+                    {
+                        <div class="minichat-empty">
+                            <h2>Начните диалог</h2>
+                            <p>Задайте вопрос ниже — сервис покажет ответ с цитатами и сразу же сохранит реплику в историю.</p>
+                        </div>
+                    }
+                    @foreach (var turn in _miniChatSession?.Turns ?? Array.Empty<RagMiniChatTurn>())
+                    {
+                        <article class="minichat-message @MiniChatOutcomeClass(turn)">
+                            <header>
+                                <strong>Вы</strong>
+                                <span class="muted">@turn.AskedAt.LocalDateTime:g</span>
+                            </header>
+                            <p class="minichat-question">@turn.UserQuestion</p>
+                            <header>
+                                <strong>Ассистент · @turn.Result.ModeLabel</strong>
+                                <span class="muted">
+                                    @if (turn.Result.Abstained)
+                                    {
+                                        <span class="rag-check ok">abstain: @turn.Result.AbstentionReason</span>
+                                    }
+                                    else
+                                    {
+                                        <span>@(turn.Result.SearchSucceeded ? $"Найдено {turn.Result.RetrievedCount}" : "Поиск не выполнен")</span>
+                                    }
+                                </span>
+                            </header>
+                            <pre>@turn.Result.Answer</pre>
+                            @if (turn.Result.Abstained && !string.IsNullOrWhiteSpace(turn.Result.ClarificationQuestion))
+                            {
+                                <div class="rag-error">@turn.Result.ClarificationQuestion</div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(turn.Result.Error))
+                            {
+                                <div class="rag-error">@turn.Result.Error</div>
+                            }
+                            <details class="rag-sources" open>
+                                <summary>Источники (@turn.Result.Sources.Count) · цитаты (@turn.Result.CitationsSafe.Count)</summary>
+                                @if (turn.Result.Sources.Count == 0 && turn.Result.CitationsSafe.Count == 0)
+                                {
+                                    <p class="muted">@(turn.Result.Answer.StartsWith("Принял уточнение", StringComparison.Ordinal) ? "Уточнение сохранено; источники для изменения настроек беседы не требуются." : "Источников нет — модель воздержалась от ответа или поиск не дал кандидатов.")</p>
+                                }
+                                @if (turn.Result.CitationsSafe.Count > 0)
+                                {
+                                    <ol>
+                                        @foreach (var c in turn.Result.CitationsSafe)
+                                        {
+                                            <li>
+                                                <div>
+                                                    <strong>@c.Reference</strong>
+                                                    <span class="rag-check @(c.Verified ? "ok" : "fail")">@(c.Verified ? "дословно" : "НЕ найдено")</span>
+                                                </div>
+                                                <small class="muted">section: @c.Section</small>
+                                                <p style="white-space: pre-wrap;">@c.Quote</p>
+                                            </li>
+                                        }
+                                    </ol>
+                                }
+                                @if (turn.Result.Sources.Count > 0)
+                                {
+                                    <details>
+                                        <summary>Все источники (@turn.Result.Sources.Count)</summary>
+                                        <ol>
+                                            @foreach (var source in turn.Result.Sources)
+                                            {
+                                                <li>
+                                                    <div><strong>@source.Title</strong> <span class="muted">@source.Source@(source.PdfPage is int p ? $" · стр. {p}" : "")</span> <span class="muted">score @source.Score.ToString("F3")</span></div>
+                                                    <small class="muted">@source.Section</small>
+                                                    <p>@source.Text</p>
+                                                </li>
+                                            }
+                                        </ol>
+                                    </details>
+                                }
+                            </details>
+                        </article>
+                    }
+                    @if (_miniChatBusy) { <div class="thinking">Ассистент анализирует запрос…</div> }
+                </article>
+                <footer class="minichat-composer">
+                    <textarea @bind="_miniChatQuestion" @bind:event="oninput" @onkeydown="OnMiniChatKeyDownAsync" rows="2" placeholder="Вопрос по локальной базе знаний · Ctrl+Enter — отправить" disabled="@_miniChatBusy"></textarea>
+                </footer>
             </section>
         }
         else if (_section == "profiles")
@@ -671,6 +961,11 @@
     private AutoTestReport? _autoTestReport;
     private AutoTestAggregateReport? _autoTestAggregate;
     private IReadOnlyList<AutoTestRunResult>? _day24Report;
+    private RagMiniChatDay25Report? _day25Report;
+    private readonly string _miniChatConversationId = Guid.NewGuid().ToString("N");
+    private RagMiniChatSession? _miniChatSession;
+    private string _miniChatQuestion = "", _miniChatGoal = "", _miniChatNewClarification = "", _miniChatNewTerm = "", _miniChatStatus = "";
+    private bool _miniChatBusy;
     private CancellationTokenSource? _autoTestCancellation;
     private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
@@ -684,6 +979,48 @@
 
     private string NavClass(string section) => _section == section ? "active" : "";
     private void OpenSection(string section) { _section = section; _notice = null; }
+    private void OpenMiniChatAsync() { OpenSection("minichat"); RefreshMiniChat(); }
+    private void RefreshMiniChat() { _miniChatSession = MiniChat.GetSession(_miniChatConversationId); _miniChatGoal = _miniChatSession.State.Goal; }
+    private string MiniChatOutcomeClass(RagMiniChatTurn turn) => turn.Result.Abstained ? "abstained" : "answered";
+    private Task OnMiniChatKeyDownAsync(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e) =>
+        e.CtrlKey && e.Key == "Enter" ? SendMiniChatAsync() : Task.CompletedTask;
+    private async Task SendMiniChatAsync()
+    {
+        if (_miniChatBusy) return;
+        var question = _miniChatQuestion.Trim();
+        if (question.Length == 0) return;
+        _miniChatBusy = true;
+        _miniChatStatus = "Ищу контекст...";
+        try
+        {
+            await MiniChat.AskAsync(_miniChatConversationId, question);
+            _miniChatQuestion = "";
+            RefreshMiniChat();
+            _miniChatStatus = "Готово";
+        }
+        catch (Exception ex) { _miniChatStatus = ex.Message; }
+        finally { _miniChatBusy = false; }
+    }
+    private void ResetMiniChatAsync() { MiniChat.Reset(_miniChatConversationId); RefreshMiniChat(); _miniChatStatus = "Новая беседа"; }
+    private void SaveMiniChatGoalAsync() { MiniChat.SetGoal(_miniChatConversationId, _miniChatGoal.Trim()); RefreshMiniChat(); }
+    private void AddMiniChatClarificationAsync() { MiniChat.AddClarification(_miniChatConversationId, _miniChatNewClarification); _miniChatNewClarification = ""; RefreshMiniChat(); }
+    private void AddMiniChatTermsAsync() { MiniChat.AddTerms(_miniChatConversationId, _miniChatNewTerm.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)); _miniChatNewTerm = ""; RefreshMiniChat(); }
+    private void RemoveMiniChatClarificationAsync(int index) { MiniChat.RemoveClarification(_miniChatConversationId, index); RefreshMiniChat(); }
+    private void RemoveMiniChatTermAsync(int index) { MiniChat.RemoveTerm(_miniChatConversationId, index); RefreshMiniChat(); }
+    private async Task RunDay25TestAsync()
+    {
+        _ragBusy = true;
+        _autoTestCancellation = new CancellationTokenSource();
+        _day25Report = null;
+        _autoTestProgress = new();
+        try
+        {
+            var progress = new Progress<string>(message => { _autoTestProgress.Add(message); _ = InvokeAsync(StateHasChanged); });
+            _day25Report = await MiniChatTest.RunDefaultAsync(progress, _autoTestCancellation.Token);
+        }
+        catch (Exception ex) { _ragStatus = ex.Message; }
+        finally { _autoTestCancellation.Dispose(); _autoTestCancellation = null; _ragBusy = false; }
+    }
     private async Task OpenProfilesAsync() { OpenSection("profiles"); await ReloadProfilesAsync(); }
     private async Task OpenInvariantsAsync() { OpenSection("invariants"); _invariants = await Session.GetInvariantsAsync(); }
     private async Task OpenMemoryAsync() { OpenSection("memory"); _memory = await Session.GetMemoryAsync(); }

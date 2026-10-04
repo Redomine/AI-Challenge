@@ -49,12 +49,72 @@ builder.Services.AddSingleton(sp =>
     var noRag = sp.GetRequiredService<NoRagAnswerService>();
     return new RagQueryService(rag, noRag, options);
 });
+// RagMiniChatService + scenario runner: scoped, чтобы состояние
+// мини-чата было привязано к пользовательской сессии (Blazor circuit).
+builder.Services.AddScoped<RagMiniChatService>();
+builder.Services.AddScoped<RagMiniChatScenarioRunner>();
 if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != "1")
 {
     builder.Services.AddHostedService(provider => provider.GetRequiredService<ScheduledTaskService>());
 }
 
 var app = builder.Build();
+if (args is ["--run-day25-clarification-smoke"])
+{
+    using var scope = app.Services.CreateScope();
+    var chat = scope.ServiceProvider.GetRequiredService<RagMiniChatService>();
+    const string id = "day25-format-smoke";
+    chat.SetGoal(id, "Узнать проекты сервера 203");
+    var update = await chat.AskAsync(id,
+        "Уточняю: Давай мне ответ в формате 2022: перечень проектов 2024: перечень проектов");
+    var answer = await chat.AskAsync(id, "Какие проекты хранятся на сервере 203");
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        Clarification = update.Result.Answer,
+        SavedClarifications = chat.GetSession(id).State.Clarifications,
+        Answer = answer.Result.Answer,
+        answer.Result.Abstained,
+        VerifiedCitations = answer.Result.CitationsSafe.Count(c => c.Verified)
+    }));
+    return;
+}
+if (args is ["--run-day25-question", var question])
+{
+    using var scope = app.Services.CreateScope();
+    var chat = scope.ServiceProvider.GetRequiredService<RagMiniChatService>();
+    var turn = await chat.AskAsync("day25-diagnostic", question);
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        turn.UserQuestion, turn.Result.Answer, turn.Result.Abstained,
+        turn.Result.AbstentionReason, turn.Result.Error, turn.Result.Trace,
+        Sources = turn.Result.Sources.Select(s => new { s.ChunkId, s.Source, s.Section, s.PdfPage, s.Score, s.Text }),
+        Citations = turn.Result.CitationsSafe.Select(c => new { c.ChunkId, c.Source, c.Verified, c.Quote })
+    }));
+    return;
+}
+if (args is ["--run-day25-smoke"] or ["--run-day25-eval"])
+{
+    using var scope = app.Services.CreateScope();
+    var runner = scope.ServiceProvider.GetRequiredService<RagMiniChatScenarioRunner>();
+    var scenarios = runner.BuildDefaultScenarios();
+    var selected = args[0] == "--run-day25-smoke"
+        ? [scenarios[0] with { Steps = scenarios[0].Steps.Take(2).ToArray() }]
+        : scenarios;
+    var report = await runner.RunAsync(selected, null, CancellationToken.None);
+    foreach (var scenario in report.Scenarios)
+    foreach (var step in scenario.Steps)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            Scenario = scenario.ScenarioName, step.Index, step.Question, step.Passed, step.FailureReason,
+            step.Result.Answer, step.Result.Abstained, step.Result.AbstentionReason,
+            step.Result.Error, SearchQuery = step.Result.Trace?.SearchQuery,
+            Sources = step.Result.Sources.Select(s => new { s.ChunkId, s.Source, s.Section, s.Score }),
+            Citations = step.Result.CitationsSafe.Select(c => new { c.ChunkId, c.Verified })
+        }));
+    }
+    return;
+}
 if (args is ["--run-day24-eval"])
 {
     var runner = app.Services.GetRequiredService<AutoTestRunner>();

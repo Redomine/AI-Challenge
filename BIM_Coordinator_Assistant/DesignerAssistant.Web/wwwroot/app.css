@@ -212,6 +212,27 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .rag-mode-table tbody td { padding: 8px 10px; border-bottom: 1px solid #e3e8e5; font-variant-numeric: tabular-nums; }
 .rag-mode-table tbody tr:last-child td { border-bottom: 0; }
 .rag-mode-table tbody td:first-child strong { color: #152019; }
+
+.minichat-layout { display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 16px; padding: 20px 28px; min-height: 0; overflow: hidden; }
+.minichat-state { grid-row: 1 / 3; overflow-y: auto; border-right: 1px solid #d9dfdc; padding-right: 16px; }
+.minichat-state-block { padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid #d9dfdc; }
+.minichat-state-block label { display: block; margin-bottom: 8px; font-weight: 700; font-size: 13px; }
+.minichat-state-block textarea, .minichat-state-block input, .minichat-composer textarea { width: 100%; padding: 9px 10px; border: 1px solid #bfc9c4; border-radius: 5px; font: inherit; }
+.minichat-state-block > button { margin-top: 8px; }
+.minichat-list { list-style: none; padding: 0; margin: 0; }
+.minichat-list li { display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: start; gap: 8px; padding: 6px 0; border-bottom: 1px solid #e4e9e6; overflow-wrap: anywhere; }
+.minichat-add { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.minichat-add input { flex: 1 1 auto; min-width: 0; }
+.minichat-add-button, .minichat-remove { flex: 0 0 32px; width: 32px; height: 32px; padding: 0; display: grid; place-items: center; line-height: 1; font-size: 20px; }
+.minichat-transcript { overflow-y: auto; min-height: 0; }
+.minichat-transcript > header, .minichat-message header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.minichat-message { padding: 14px 0; border-bottom: 1px solid #d9dfdc; }
+.minichat-message pre { white-space: pre-wrap; font-family: inherit; }
+.minichat-question { margin: 8px 0 18px; }
+.minichat-empty { padding: 32px 0; }
+.minichat-empty h2 { font-size: 17px; margin: 0 0 8px; }
+.minichat-composer { min-height: 72px; }
+@media (max-width: 760px) { .minichat-layout { display: flex; flex-direction: column; overflow-y: auto; padding: 16px; } .minichat-state { border-right: 0; border-bottom: 1px solid #d9dfdc; padding-right: 0; max-height: 260px; } .minichat-transcript { overflow: visible; } }
 .rag-mode-table-wrap { overflow-x: auto; margin: 0 -2px; padding: 0 2px; }
 
 @media (max-width: 760px) {

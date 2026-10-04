@@ -46,7 +46,7 @@ public sealed class StructuralIndexReader : IDisposable
     public int EmbedDim => _embedDim;
     public string EmbedModel => _embedModel;
 
-    public IReadOnlyList<RagSource> Search(float[] query, int topK)
+    public IReadOnlyList<RagSource> Search(float[] query, int topK, string? exactTerm = null)
     {
         if (query is null) throw new ArgumentNullException(nameof(query));
         if (query.Length == 0)
@@ -74,7 +74,10 @@ public sealed class StructuralIndexReader : IDisposable
             SELECT chunk_id, source, source_title, section, text, pdf_page, embedding
             FROM chunks
             WHERE embedding IS NOT NULL
+              AND ($term IS NULL OR instr(lower(section), lower($term)) > 0
+                   OR instr(lower(text), lower($term)) > 0)
             """;
+        cmd.Parameters.AddWithValue("$term", (object?)exactTerm ?? DBNull.Value);
         using var reader = cmd.ExecuteReader();
         var scored = new List<(float Score, RagSource Hit)>();
         while (reader.Read())

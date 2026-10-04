@@ -106,6 +106,14 @@ public sealed class RagQueryService
         string question,
         RagMode mode,
         RagRunSettings? overrideSettings,
+        CancellationToken cancellationToken = default) =>
+        await QueryAsync(question, mode, overrideSettings, null, cancellationToken);
+
+    public async Task<RagQueryResult> QueryAsync(
+        string question,
+        RagMode mode,
+        RagRunSettings? overrideSettings,
+        string? answerContext,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
@@ -164,7 +172,7 @@ public sealed class RagQueryService
                 overrideSettings);
         }
 
-        var rag = await _rag.AskAsync(question, effective, cancellationToken);
+        var rag = await _rag.AskAsync(question, effective, answerContext, cancellationToken);
         return new RagQueryResult(
             rag.Question,
             mode,
