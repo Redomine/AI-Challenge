@@ -59,6 +59,48 @@ if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != 
 }
 
 var app = builder.Build();
+if (args is ["--reasoning-smoke", var provider])
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+    ILlmClient llm;
+    if (provider.Equals("ollama", StringComparison.OrdinalIgnoreCase))
+    {
+        http.BaseAddress = OllamaSettings.BaseAddress;
+        llm = new OllamaLlmClient(http, OllamaSettings.Model);
+    }
+    else if (provider.Equals("gigachat", StringComparison.OrdinalIgnoreCase))
+    {
+        llm = new GigaChatClient(http, AppOptions.FromEnvironment());
+    }
+    else throw new ArgumentException("Укажите ollama или gigachat после --reasoning-smoke.");
+    var result = await llm.GenerateAsync("Ответь кратко на русском языке.",
+        [new DesignerAssistant.Models.ChatMessage("user", "Сколько будет 2 + 2?")]);
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        Provider = provider,
+        Answer = result.Content,
+        ReasoningLength = result.Reasoning?.Length ?? 0
+    }));
+    return;
+}
+if (args is ["--llm-smoke"])
+{
+    using var http = new HttpClient { BaseAddress = OllamaSettings.BaseAddress, Timeout = TimeSpan.FromMinutes(5) };
+    var llm = new OllamaLlmClient(http, OllamaSettings.Model);
+    var prompts = new[]
+    {
+        "Ответь одним словом: сколько будет 2 + 2?",
+        "Объясни двумя предложениями разницу между HTTP GET и POST.",
+        "Напиши короткую функцию C# для поиска максимума в массиве int и укажи её сложность."
+    };
+    foreach (var prompt in prompts)
+    {
+        var response = await llm.GenerateAsync("Отвечай кратко на русском языке.",
+            [new DesignerAssistant.Models.ChatMessage("user", prompt)]);
+        Console.WriteLine(JsonSerializer.Serialize(new { Provider = "Ollama", Model = OllamaSettings.Model, Prompt = prompt, response.Content }));
+    }
+    return;
+}
 if (args is ["--run-day25-clarification-smoke"])
 {
     using var scope = app.Services.CreateScope();

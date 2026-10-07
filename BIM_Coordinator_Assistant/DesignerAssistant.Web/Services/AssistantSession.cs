@@ -20,6 +20,7 @@ public sealed class AssistantSession : IAsyncDisposable
     private TaskOperationsReporter? _reporter;
     private TaskCompletionSource<bool>? _confirmation;
     private RagQueryService? _ragQuery;
+    private SwitchableLlmClient? _llm;
     private bool _allowInteractiveConfirmation = true;
 
     public AssistantSession(IHttpClientFactory httpClientFactory) => _httpClientFactory = httpClientFactory;
@@ -27,6 +28,11 @@ public sealed class AssistantSession : IAsyncDisposable
     public event Action? Changed;
     public string? PendingTransaction { get; private set; }
     public AppOptions? Options { get; private set; }
+    public LlmProvider Provider => _llm?.Provider ?? LlmProvider.Ollama;
+    public string OllamaModel => OllamaSettings.Model;
+    public string? LastReasoning => _llm?.LastReasoning;
+    public bool HasModelResponse => _llm?.HasResponse == true;
+    public IReadOnlyList<AgentActivityEntry> AgentActivity => _workflow?.Activity ?? [];
     public TaskContext? CurrentTask => _workflow?.Context;
     public bool AwaitingPlanApproval => _workflow?.AwaitingPlanApproval == true;
     public bool PlanningInterrupted => _workflow?.PlanningInterrupted == true;
@@ -70,10 +76,17 @@ public sealed class AssistantSession : IAsyncDisposable
             Environment.SetEnvironmentVariable("DESIGN_ASSISTANT_DB_PATH", databasePath);
         }
 
-        Options = AppOptions.FromEnvironment();
+        Options = AppOptions.FromEnvironment(requireGigaChatKey: false);
         var httpClient = _httpClientFactory.CreateClient();
         httpClient.Timeout = TimeSpan.FromMinutes(2);
-        var llm = new GigaChatClient(httpClient, Options);
+        var ollamaHttp = _httpClientFactory.CreateClient();
+        ollamaHttp.BaseAddress = OllamaSettings.BaseAddress;
+        ollamaHttp.Timeout = TimeSpan.FromMinutes(5);
+        _llm = new SwitchableLlmClient(
+            new OllamaLlmClient(ollamaHttp, OllamaSettings.Model, Options.MaxOutputTokens),
+            new GigaChatClient(httpClient, Options),
+            !string.IsNullOrWhiteSpace(Options.AuthorizationKey));
+        _llm.Changed += () => Changed?.Invoke();
         var history = new SqliteChatHistoryStore(Options.DatabasePath);
         var memory = new SqliteMemoryStore(Options.DatabasePath);
         var profiles = new SqliteUserProfileStore(Options.DatabasePath);
@@ -86,9 +99,16 @@ public sealed class AssistantSession : IAsyncDisposable
         _reporter = new TaskOperationsReporter(_log, _ops, automaticNotifications);
         var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(contentRoot));
         var tools = new AuditedToolProvider(new CompositeToolProvider(_revit, workspace, _log, _ops), _log);
-        _agent = new DesignAssistantAgent(llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
+        _agent = new DesignAssistantAgent(_llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
         await _agent.InitializeAsync(cancellationToken);
         _workflow = new TaskWorkflow(_agent);
+        _workflow.ActivityChanged += () => Changed?.Invoke();
+    }
+
+    public void SelectProvider(LlmProvider provider)
+    {
+        _llm?.Select(provider);
+        _workflow?.ClearActivity();
     }
 
     public Task<AgentResponse> AskAsync(string message, CancellationToken cancellationToken = default) =>
@@ -282,8 +302,11 @@ public sealed class AssistantSession : IAsyncDisposable
     public Task SaveInvariantsAsync(string text, CancellationToken cancellationToken = default) =>
         Agent.SaveInvariantsAsync(text, cancellationToken);
 
-    public Task ClearHistoryAsync(CancellationToken cancellationToken = default) =>
-        Agent.ClearHistoryAsync(cancellationToken);
+    public async Task ClearHistoryAsync(CancellationToken cancellationToken = default)
+    {
+        await Agent.ClearHistoryAsync(cancellationToken);
+        _workflow?.ClearActivity();
+    }
 
     public Task CompleteTaskAsync(CancellationToken cancellationToken = default) =>
         Agent.CompleteTaskAsync(cancellationToken);

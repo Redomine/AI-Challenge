@@ -43,8 +43,14 @@
         else if (_section == "chat")
         {
             <header class="workspace-header">
-                <div><h1>Диалог</h1><p>Профиль: @(_activeProfile?.Name ?? "не выбран")</p></div>
-                <button class="secondary" @onclick="ClearHistoryAsync" disabled="@_busy">Очистить диалог</button>
+                <div><h1>Диалог</h1><p>Профиль: @(_activeProfile?.Name ?? "не выбран") · @ProviderLabel</p></div>
+                <div class="provider-actions">
+                    <div class="provider-switch" role="group" aria-label="Модель основного чата">
+                        <button class="@(Session.Provider == LlmProvider.Ollama ? "active" : "")" @onclick="() => SelectProvider(LlmProvider.Ollama)" disabled="@(_busy || TaskIsActive)">Qwen</button>
+                        <button class="@(Session.Provider == LlmProvider.GigaChat ? "active" : "")" @onclick="() => SelectProvider(LlmProvider.GigaChat)" disabled="@(_busy || TaskIsActive)">GigaChat</button>
+                    </div>
+                    <button class="secondary" @onclick="ClearHistoryAsync" disabled="@_busy">Очистить диалог</button>
+                </div>
             </header>
             <section class="task-flow" aria-label="Этапы задачи">
                 @foreach (var state in PrimaryTaskStages)
@@ -59,6 +65,7 @@
                     <label>Таймаут, мин.<input type="number" min="1" max="120" @bind="Session.OperationTimeoutMinutes" disabled="@TaskIsActive" /></label>
                 </div>
             </section>
+            <div class="chat-content">
             <section class="chat-log @(Session.History.Count == 0 ? "empty" : "")" aria-live="polite">
                 @if (Session.History.Count == 0)
                 {
@@ -83,6 +90,31 @@
                 }
                 @if (_busy) { <div class="thinking">Ассистент анализирует запрос...</div> }
             </section>
+            <aside class="reasoning-panel" aria-label="Рассуждения агента" aria-live="polite">
+                <header><h2>Рассуждения агента</h2><span>@ProviderLabel</span></header>
+                @if (Session.AgentActivity.Count > 0)
+                {
+                    <div class="reasoning-list">
+                        @foreach (var entry in Session.AgentActivity)
+                        {
+                            <article class="reasoning-entry">
+                                <span>@TaskStageCaption(entry.Stage)</span>
+                                <strong>@entry.Title</strong>
+                                <div>@entry.Content</div>
+                            </article>
+                        }
+                    </div>
+                }
+                else if (!string.IsNullOrWhiteSpace(Session.LastReasoning))
+                {
+                    <div class="reasoning-text">@Session.LastReasoning</div>
+                }
+                else
+                {
+                    <p class="reasoning-empty">@(_busy ? "Агент обрабатывает запрос..." : "Здесь появятся план, вызовы инструментов и проверка результата.")</p>
+                }
+            </aside>
+            </div>
             <footer class="composer">
                 @if (Session.PlanningInterrupted && Session.CurrentTask is not null)
                 {
@@ -978,6 +1010,12 @@
     }
 
     private string NavClass(string section) => _section == section ? "active" : "";
+    private string ProviderLabel => Session.Provider == LlmProvider.Ollama ? $"Локально: {Session.OllamaModel}" : "GigaChat";
+    private void SelectProvider(LlmProvider provider)
+    {
+        try { Session.SelectProvider(provider); _notice = $"Выбрана модель: {ProviderLabel}"; }
+        catch (Exception ex) { _notice = ex.Message; }
+    }
     private void OpenSection(string section) { _section = section; _notice = null; }
     private void OpenMiniChatAsync() { OpenSection("minichat"); RefreshMiniChat(); }
     private void RefreshMiniChat() { _miniChatSession = MiniChat.GetSession(_miniChatConversationId); _miniChatGoal = _miniChatSession.State.Goal; }

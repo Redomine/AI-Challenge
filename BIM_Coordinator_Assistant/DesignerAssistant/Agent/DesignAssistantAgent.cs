@@ -100,6 +100,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             {"summary":"цель плана","clarification":null,"steps":[{"action":"что сделать","tool":"точное имя или null","arguments":{"известныйАргумент":"значение"},"argumentSources":{"неизвестныйАргумент":"результат шага 1"}}]}
             Каждый обязательный аргумент инструмента должен находиться либо в arguments, либо в argumentSources.
             Абсолютные пути из запроса пользователя копируй в arguments дословно: не переводи части пути, не меняй кириллицу, пробелы, регистр или разделители.
+            Инструменты workspace_* ограничены рабочим Git-репозиторием. Для RVT по внешнему пути не добавляй workspace_path_exists: revit_custom_open_model сам проверяет файл.
             Для шага с аргументом parameterName предусмотри получение фактических имён через revit_get_element_parameters: сначала получи ElementId, затем параметры подходящего элемента, а точное parameterName возьми из результата этого шага. Не доверяй регистру имени из запроса пользователя.
             Исключение для массовой проверки всей модели через revit_custom_filter_selection: используй имя из запроса как гипотезу, а сам инструмент покажет missing и ambiguous; не запрашивай список всех ElementId и передавай selectionId из каждого шага в следующий.
             """;
@@ -141,6 +142,12 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
 
     public Task<AgentResponse> ExecuteTaskAsync(TaskContext context, CancellationToken cancellationToken = default)
     {
+        if (_llmClient is SwitchableLlmClient { Provider: LlmProvider.Ollama } &&
+            context.StructuredPlan is { Steps.Count: > 0 and <= 8 } approvedPlan &&
+            approvedPlan.Steps.All(step => step.Tool is not null &&
+                step.ArgumentSources.Keys.All(key => step.Arguments.ContainsKey(key))))
+            return ExecuteResolvedPlanAsync(approvedPlan, cancellationToken);
+
         var stageInstructions = """
             Ты находишься только на стадии EXECUTION. В direct mode выполни исходный запрос напрямую; в plan mode выполни согласованный план в его пределах.
             Используй доступные инструменты, когда они необходимы. Не проводи финальную валидацию.
@@ -156,6 +163,33 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         var plan = context.StructuredPlan is null ? context.Plan : JsonSerializer.Serialize(context.StructuredPlan);
         var input = $"[MODE]\n{context.Mode}\n[/MODE]\n\n[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]{validationFeedback}";
         return RunStageAsync(input, stageInstructions, useTools: true, addUserMessage: false, cancellationToken, stage: TaskState.Execution, includeHistory: false);
+    }
+
+    private async Task<AgentResponse> ExecuteResolvedPlanAsync(TaskPlan plan, CancellationToken cancellationToken)
+    {
+        var provider = _toolProvider ?? throw new InvalidOperationException("Провайдер инструментов недоступен.");
+        var policy = new ToolExecutionPolicy(provider, await provider.GetToolsAsync(cancellationToken));
+        var results = new List<ToolResultEnvelope>();
+        var traces = new List<string>();
+        foreach (var step in plan.Steps)
+        {
+            var arguments = JsonSerializer.SerializeToElement(step.Arguments);
+            traces.Add($"Tool trace: {step.Tool} {arguments.GetRawText()}");
+            var result = await policy.ExecuteAsync(step.Tool!, arguments, cancellationToken);
+            results.Add(result);
+            traces.Add($"Tool result: {step.Tool} {(result.Ok ? result.Result?.GetRawText() : result.Error?.Message)}");
+            if (!result.Ok || !result.Completed) break;
+        }
+        var content = "[EXECUTED] " + string.Join(Environment.NewLine,
+            results.Select(result => result.Ok
+                ? $"{result.Tool}: {result.Result?.GetRawText()}"
+                : $"{result.Tool}: {result.Error?.Message}"));
+        _history.Add(new ChatMessage("assistant", content, TaskState.Execution));
+        await _historyStore.AppendAsync([new ChatMessage("assistant", content, TaskState.Execution)], cancellationToken);
+        var count = await _llmClient.CountTextTokensAsync(_history.Select(message => message.Content).ToArray(), cancellationToken);
+        return new AgentResponse(
+            new LlmResponse(content, "approved_plan", new TokenUsage(0, 0, 0, 0, 0, 0, 0, true), results),
+            count.TotalTokens, count.IsEstimated, count.TotalTokens, traces);
     }
 
     public async Task<AgentResponse> ValidateTaskAsync(TaskContext context, CancellationToken cancellationToken = default)

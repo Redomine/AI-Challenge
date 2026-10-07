@@ -11,10 +11,10 @@ public sealed record AppOptions(
     decimal PricePerMillionTokens,
     int RecentMessageCount)
 {
-    public static AppOptions FromEnvironment()
+    public static AppOptions FromEnvironment(bool requireGigaChatKey = true)
     {
         var authorizationKey = Environment.GetEnvironmentVariable("GIGACHAT_AUTH_KEY");
-        if (string.IsNullOrWhiteSpace(authorizationKey))
+        if (requireGigaChatKey && string.IsNullOrWhiteSpace(authorizationKey))
         {
             throw new InvalidOperationException(
                 "Не задан GIGACHAT_AUTH_KEY. " +
@@ -80,7 +80,7 @@ public sealed record AppOptions(
             10);
 
         return new AppOptions(
-            authorizationKey,
+            authorizationKey ?? "",
             scope,
             model,
             tokenizerModel,

@@ -23,6 +23,7 @@ public sealed class GigaChatToolFlowTests
             JsonSerializer.SerializeToElement(new { type = "object" }));
 
         Assert.Equal("{\"summary\":\"План\"}", response.Content);
+        Assert.Equal("Проверяю план.", response.Reasoning);
         Assert.Equal(3, handler.ChatRequestCount);
     }
 
@@ -42,8 +43,10 @@ public sealed class GigaChatToolFlowTests
 
         Assert.True(provider.InvocationCount == 1, response.Content);
         Assert.Equal("Активный вид прочитан.", response.Content);
+        Assert.Equal("Нужно прочитать вид.\n\nДанные получены.", response.Reasoning?.Replace("\r\n", "\n"));
         using var finalRequest = JsonDocument.Parse(handler.RequestBodies[^1]);
         Assert.Equal("auto", finalRequest.RootElement.GetProperty("function_call").GetString());
+        Assert.False(finalRequest.RootElement.TryGetProperty("reasoning_effort", out _));
     }
 
     [Fact]
@@ -338,7 +341,7 @@ public sealed class GigaChatToolFlowTests
             ChatRequestCount++;
             return Task.FromResult(Json(new
             {
-                choices = new[] { new { message = new { content = ChatRequestCount < 3 ? "" : "{\"summary\":\"План\"}" }, finish_reason = "stop" } },
+                choices = new[] { new { message = new { content = ChatRequestCount < 3 ? "" : "{\"summary\":\"План\"}", reasoning_content = "Проверяю план." }, finish_reason = "stop" } },
                 usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
             }));
         }
@@ -434,12 +437,12 @@ public sealed class GigaChatToolFlowTests
             {
                 1 => Json(new
                 {
-                    choices = new[] { new { message = new { content = "", function_call = new { name = "revit_get_current_view_info", arguments = new { } } } } },
+                    choices = new[] { new { message = new { content = "", reasoning_content = "Нужно прочитать вид.", function_call = new { name = "revit_get_current_view_info", arguments = new { } } } } },
                     usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
                 }),
                 _ => Json(new
                 {
-                    choices = new[] { new { message = new { content = "Активный вид прочитан." }, finish_reason = "stop" } },
+                    choices = new[] { new { message = new { content = "Активный вид прочитан.", reasoning_content = "Данные получены." }, finish_reason = "stop" } },
                     usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 }
                 })
             };

@@ -7,6 +7,10 @@ public sealed class TaskWorkflow
     private const int MaxAutomaticStages = 8;
     private readonly ITaskStageRunner _runner;
     private readonly TaskStateMachine _machine;
+    private readonly List<AgentActivityEntry> _activity = [];
+
+    public event Action? ActivityChanged;
+    public IReadOnlyList<AgentActivityEntry> Activity => _activity;
 
     public TaskWorkflow(ITaskStageRunner runner, TaskStateMachine? machine = null)
     {
@@ -30,6 +34,7 @@ public sealed class TaskWorkflow
             throw new InvalidOperationException("Сначала завершите текущую задачу.");
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
 
+        ClearActivity();
         Context = new TaskContext(query.Trim(), TaskState.Planning, Mode: TaskMode.Plan);
         await BuildPlanAsync(cancellationToken: cancellationToken);
     }
@@ -40,6 +45,7 @@ public sealed class TaskWorkflow
             throw new InvalidOperationException("Сначала завершите текущую задачу.");
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Запрос не должен быть пустым.", nameof(query));
 
+        ClearActivity();
         Context = new TaskContext(query.Trim(), TaskState.Execution, Mode: TaskMode.Direct);
         await AdvanceAsync(cancellationToken);
     }
@@ -200,12 +206,19 @@ public sealed class TaskWorkflow
         LastResponse = CreateWorkflowResponse("Задача отменена", "task_state_cancelled");
     }
 
+    public void ClearActivity()
+    {
+        _activity.Clear();
+        ActivityChanged?.Invoke();
+    }
+
     private async Task BuildPlanAsync(string? revision = null, string? storedUserMessage = null, CancellationToken cancellationToken = default)
     {
         EnsureState(TaskState.Planning);
         try
         {
             LastResponse = await _runner.PlanTaskAsync(Context!.Query, revision, cancellationToken, storedUserMessage);
+            RecordResponse(TaskState.Planning, "План модели", LastResponse);
         }
         catch (OperationCanceledException)
         {
@@ -221,6 +234,7 @@ public sealed class TaskWorkflow
                 Context! with { FailureReason = exception.Message, DiagnosticTraces = traces },
                 TaskState.PlanningInterrupted);
             LastResponse = CreateWorkflowResponse(report, "task_state_planning_interrupted", traces);
+            RecordActivity(TaskState.Planning, "Ошибка планирования", exception.Message);
             return;
         }
         if (LastResponse.ModelResponse.Content.TrimStart().StartsWith("[CLARIFY]", StringComparison.OrdinalIgnoreCase))
@@ -274,6 +288,7 @@ public sealed class TaskWorkflow
         try
         {
             LastResponse = await _runner.ExecuteTaskAsync(Context!, cancellationToken);
+            RecordResponse(TaskState.Execution, "Выполнение", LastResponse);
             var outcome = ParseExecutionOutcome(LastResponse.ModelResponse.Content);
             Context = Context! with
             {
@@ -342,6 +357,7 @@ public sealed class TaskWorkflow
                 },
                 TaskState.ExecutionInterrupted);
             LastResponse = CreateWorkflowResponse(report, "task_state_execution_interrupted", traces);
+            RecordActivity(TaskState.Execution, "Ошибка выполнения", exception.Message);
         }
     }
 
@@ -350,6 +366,7 @@ public sealed class TaskWorkflow
         try
         {
             LastResponse = await _runner.ValidateTaskAsync(Context!, cancellationToken);
+            RecordResponse(TaskState.Validation, "Проверка модели", LastResponse);
             Context = Context! with { ValidationResult = LastResponse.ModelResponse.Content };
             var outcome = ParseValidationOutcome(LastResponse.ModelResponse.Content);
             if (outcome == ValidationOutcome.Inconclusive)
@@ -379,7 +396,32 @@ public sealed class TaskWorkflow
             var report = $"Проверка не завершена. Повторное изменение модели не запущено.{Environment.NewLine}{exception.Message}";
             Context = _machine.Transition(Context! with { ValidationResult = report }, TaskState.AwaitingValidationDecision);
             LastResponse = CreateWorkflowResponse(report, "task_state_validation_error");
+            RecordActivity(TaskState.Validation, "Ошибка проверки", exception.Message);
         }
+    }
+
+    private void RecordResponse(TaskState stage, string title, AgentResponse response)
+    {
+        if (!string.IsNullOrWhiteSpace(response.ModelResponse.Reasoning))
+            RecordActivity(stage, "Рассуждение модели", response.ModelResponse.Reasoning);
+        if (response.ModelResponse.ToolResults is { Count: > 0 } results)
+        {
+            foreach (var result in results)
+                RecordActivity(stage, result.Ok ? $"Инструмент: {result.Tool}" : $"Ошибка: {result.Tool}",
+                    result.Ok ? result.Result?.GetRawText() ?? "Результат не представлен." : result.Error?.Message ?? "Неизвестная ошибка.");
+        }
+        else
+        {
+            RecordActivity(stage, title, response.ModelResponse.Content);
+        }
+    }
+
+    private void RecordActivity(TaskState stage, string title, string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return;
+        _activity.Add(new AgentActivityEntry(stage, title, content.Trim()));
+        if (_activity.Count > 30) _activity.RemoveAt(0);
+        ActivityChanged?.Invoke();
     }
 
     private static ExecutionStageOutcome ParseExecutionOutcome(string content)
@@ -417,3 +459,5 @@ public sealed class TaskWorkflow
 
     private static bool IsTerminal(TaskState state) => state is TaskState.Done or TaskState.Cancelled or TaskState.Failed;
 }
+
+public sealed record AgentActivityEntry(TaskState Stage, string Title, string Content);

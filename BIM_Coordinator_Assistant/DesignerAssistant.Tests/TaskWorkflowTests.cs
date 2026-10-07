@@ -7,6 +7,32 @@ namespace DesignerAssistant.Tests;
 public sealed class TaskWorkflowTests
 {
     [Fact]
+    public async Task ActivityKeepsPlanToolEvidenceAndValidationAcrossStages()
+    {
+        var workflow = new TaskWorkflow(new FakeRunner(["[EXECUTED] Готово"], ["[PASS] Проверено"]));
+
+        await workflow.StartAsync("Выполни задачу");
+        await workflow.ApprovePlanAsync();
+
+        Assert.Equal([TaskState.Planning, TaskState.Execution, TaskState.Validation],
+            workflow.Activity.Select(entry => entry.Stage));
+        Assert.Contains("Первый план", workflow.Activity[0].Content);
+        Assert.Contains("Проверено", workflow.Activity[2].Content);
+    }
+
+    [Fact]
+    public async Task ActivityRecordsSuccessfulToolAndFailureSeparately()
+    {
+        var workflow = new TaskWorkflow(new ToolErrorRunner());
+
+        await workflow.StartDirectAsync("Открой модель и загрузи семейства");
+
+        Assert.Contains(workflow.Activity, entry => entry.Title == "Инструмент: revit_custom_open_model");
+        Assert.Contains(workflow.Activity, entry => entry.Title == "Ошибка: revit_custom_load_families" &&
+            entry.Content.Contains("Supply exactly one", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ToolErrorAfterOpeningModelStopsWithoutRepeatingExecution()
     {
         var runner = new ToolErrorRunner();

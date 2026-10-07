@@ -44,6 +44,11 @@ public sealed class ToolExecutionPolicy(
             var raw = await provider.InvokeAsync(name, arguments, cancellationToken);
             if (provider is IToolOperationCoordinator coordinator)
                 raw = await coordinator.WaitForCompletionAsync(name, raw, cancellationToken);
+            if (raw?.StartsWith("Error:", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _failedCalls.Add(signature);
+                return Failure("tool_error", raw.Trim());
+            }
             using var resultDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "null" : raw);
             var result = resultDocument.RootElement.Clone();
             if (IsFailure(result, out var message))
@@ -129,6 +134,7 @@ public sealed class ToolExecutionPolicy(
     {
         if (result.ValueKind == JsonValueKind.Object &&
             (result.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False ||
+             result.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.False ||
              result.TryGetProperty("error", out var error) && error.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined ||
              result.TryGetProperty("cancelled", out var cancelled) && cancelled.ValueKind == JsonValueKind.True))
         {

@@ -74,6 +74,31 @@ public sealed class ToolExecutionPolicyTests
     }
 
     [Fact]
+    public async Task PlainTextMcpErrorPreservesCause()
+    {
+        var provider = new StubProvider(result: "Error: No document is open.");
+        var policy = new ToolExecutionPolicy(provider, await provider.GetToolsAsync());
+
+        var result = await policy.ExecuteAsync("revit_get_current_view_info", Json("{}"));
+
+        Assert.False(result.Ok);
+        Assert.Equal("tool_error", result.Error?.Code);
+        Assert.Equal("Error: No document is open.", result.Error?.Message);
+    }
+
+    [Fact]
+    public async Task FailedBridgeOperationIsNotReportedAsSuccess()
+    {
+        var provider = new StubProvider(result: "{\"status\":\"failed\",\"success\":false,\"message\":\"File missing\"}");
+        var policy = new ToolExecutionPolicy(provider, await provider.GetToolsAsync());
+
+        var result = await policy.ExecuteAsync("revit_get_current_view_info", Json("{}"));
+
+        Assert.False(result.Ok);
+        Assert.Equal("File missing", result.Error?.Message);
+    }
+
+    [Fact]
     public async Task CancelledConfirmationDoesNotInvokeMutation()
     {
         var provider = new StubProvider(toolName: "revit_custom_execute_pyrevit_command", confirm: false);

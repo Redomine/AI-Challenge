@@ -4,4 +4,5 @@ public sealed record LlmResponse(
     string Content,
     string FinishReason,
     TokenUsage Usage,
-    IReadOnlyList<ToolResultEnvelope>? ToolResults = null);
+    IReadOnlyList<ToolResultEnvelope>? ToolResults = null,
+    string? Reasoning = null);

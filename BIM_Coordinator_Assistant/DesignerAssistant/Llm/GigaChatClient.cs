@@ -73,11 +73,11 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var historyBeforeResponseTokens = tokenCounts.Skip(1).Sum();
         var contextTokens = tokenCounts.Sum();
 
-        if (contextTokens + _options.MaxOutputTokens > _options.ContextLimitTokens)
+        if (contextTokens + _options.MaxOutputTokens + 512 > _options.ContextLimitTokens)
         {
             throw new ContextWindowExceededException(
                 contextTokens,
-                _options.MaxOutputTokens,
+                _options.MaxOutputTokens + 512,
                 _options.ContextLimitTokens,
                 tokenCountResult.IsEstimated);
         }
@@ -95,13 +95,17 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
             {
                 model = _options.Model,
                 messages = requestMessages,
-                max_tokens = _options.MaxOutputTokens
+                max_tokens = _options.MaxOutputTokens + 512,
+                reasoning_effort = "medium",
+                reasoning_max_tokens = 512
             }
             : new
             {
                 model = _options.Model,
                 messages = requestMessages,
-                max_tokens = _options.MaxOutputTokens,
+                max_tokens = _options.MaxOutputTokens + 512,
+                reasoning_effort = "medium",
+                reasoning_max_tokens = 512,
                 response_format = new { type = "json_schema", schema = responseSchema.Value, strict = true }
             };
         using var request = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
@@ -153,7 +157,8 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                 cachedPromptTokens,
                 completionTokens,
                 billedTokens,
-                tokenCountResult.IsEstimated));
+                tokenCountResult.IsEstimated),
+            Reasoning: GetReasoning(message));
     }
 
     public async Task<LlmResponse> GenerateWithToolsAsync(
@@ -187,6 +192,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var forcedTool = DetectDeterministicTool(latestUserMessage, tools);
         var toolCallCount = 0;
         var executedToolResults = new List<ToolResultEnvelope>();
+        var reasoningSteps = new List<string>();
         if (forcedTool == "revit_custom_collect_mep_elements")
         {
             using var emptyArguments = JsonDocument.Parse("{}");
@@ -243,6 +249,7 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
             var root = document.RootElement;
             var choice = root.GetProperty("choices")[0];
             var message = choice.GetProperty("message");
+            if (GetReasoning(message) is { } reasoning) reasoningSteps.Add(reasoning);
             var usage = root.GetProperty("usage");
             totalPrompt += GetInt32(usage, "prompt_tokens");
             totalCompletion += GetInt32(usage, "completion_tokens");
@@ -274,7 +281,8 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                     ["role"] = "function", ["name"] = name, ["content"] = toolResultJson
                 });
                 if (!toolResult.Ok)
-                    return CreateToolResultResponse(executedToolResults, "tool_error", totalPrompt, totalCompletion, totalBilled);
+                    return CreateToolResultResponse(executedToolResults, "tool_error", totalPrompt, totalCompletion, totalBilled) with
+                    { Reasoning = JoinReasoning(reasoningSteps) };
                 continue;
             }
 
@@ -285,14 +293,16 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                     ? emptyFinish.GetString() ?? "не указана"
                     : "не указана";
                 if (executedToolResults.Count > 0)
-                    return CreateToolResultResponse(executedToolResults, "tool_results_empty_final", totalPrompt, totalCompletion, totalBilled);
+                    return CreateToolResultResponse(executedToolResults, "tool_results_empty_final", totalPrompt, totalCompletion, totalBilled) with
+                    { Reasoning = JoinReasoning(reasoningSteps) };
                 throw new InvalidOperationException(
                     $"GigaChat не вернул ни текст, ни вызов инструмента. finish_reason={emptyFinishReason}; " +
                     $"message={message.GetRawText()}");
             }
             var finishReason = choice.TryGetProperty("finish_reason", out var finish) ? finish.GetString() ?? "не указана" : "не указана";
             if (executedToolResults.Any(result => !result.Completed))
-                return CreateToolResultResponse(executedToolResults, "tool_operation_pending", totalPrompt, totalCompletion, totalBilled);
+                return CreateToolResultResponse(executedToolResults, "tool_operation_pending", totalPrompt, totalCompletion, totalBilled) with
+                { Reasoning = JoinReasoning(reasoningSteps) };
             if (modelAnalysis && latestUserMessage is not null &&
                 System.Text.RegularExpressions.Regex.IsMatch(latestUserMessage, @"\bпараметр\w*\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
                 executedToolResults.All(result => result.Tool != "revit_custom_filter_selection"))
@@ -300,12 +310,12 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
                     "Сбор элементов выполнен, но проверка параметров не состоялась: агент не вызвал revit_custom_filter_selection.",
                     "tool_flow_incomplete",
                     new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false),
-                    executedToolResults.ToArray());
+                    executedToolResults.ToArray(), JoinReasoning(reasoningSteps));
             return new LlmResponse(
                 content.Trim(),
                 executedToolResults.Count > 0 ? "tool_results_grounded" : finishReason,
                 new TokenUsage(0, totalCompletion, totalPrompt, totalPrompt, 0, totalCompletion, totalBilled, false),
-                executedToolResults.ToArray());
+                executedToolResults.ToArray(), JoinReasoning(reasoningSteps));
         }
 
         throw new ToolCallLimitExceededException(8);
@@ -316,6 +326,16 @@ public sealed class GigaChatClient : IToolCallingLlmClient, IStructuredLlmClient
         var capability = ToolCapabilityCatalog.Get(tool);
         return $"{capability.Title}. {capability.Description} Область: {capability.Category}. " +
                $"{(ToolCapabilityCatalog.RequiresConfirmation(tool) ? "Требует подтверждения непосредственно перед вызовом." : "Выполняется без подтверждения.")}";
+    }
+
+    private static string? GetReasoning(JsonElement message) =>
+        message.TryGetProperty("reasoning_content", out var value) && value.ValueKind == JsonValueKind.String &&
+        !string.IsNullOrWhiteSpace(value.GetString()) ? value.GetString()!.Trim() : null;
+
+    private static string? JoinReasoning(IEnumerable<string> steps)
+    {
+        var result = string.Join(Environment.NewLine + Environment.NewLine, steps);
+        return result.Length == 0 ? null : result;
     }
 
     private static string? DetectDeterministicTool(string? message, IReadOnlyCollection<ToolDefinition> tools)

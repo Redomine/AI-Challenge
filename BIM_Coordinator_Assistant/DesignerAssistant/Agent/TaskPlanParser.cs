@@ -40,6 +40,22 @@ public static class TaskPlanParser
                 ValidateLiteralPaths(arguments, sourceQuery);
                 steps.Add(new TaskPlanStep(action, toolName, arguments, sources));
             }
+            var openPaths = steps.Where(step => step.Tool == "revit_custom_open_model")
+                .Select(step => step.Arguments.TryGetValue("path", out var path) ? path.GetString() : null)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            steps.RemoveAll(step => step.Tool == "workspace_path_exists" &&
+                step.Arguments.TryGetValue("path", out var path) &&
+                path.ValueKind == JsonValueKind.String &&
+                path.GetString() is { } text && Path.IsPathFullyQualified(text) &&
+                openPaths.Contains(text));
+            foreach (var step in steps.Where(step => step.Tool?.StartsWith("workspace_", StringComparison.Ordinal) == true))
+            {
+                if (step.Arguments.TryGetValue("path", out var path) &&
+                    path.ValueKind == JsonValueKind.String &&
+                    path.GetString() is { } text && Path.IsPathFullyQualified(text))
+                    throw new InvalidDataException($"Инструмент '{step.Tool}' принимает только относительный путь внутри workspace.");
+            }
             return new TaskPlan(summary, steps, clarification);
         }
         catch (JsonException exception)
