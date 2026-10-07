@@ -20,16 +20,21 @@ public sealed class LlmClientFactory
 
     public ILlmClient Create()
     {
-        var http = _factory.CreateClient("rag-llm");
-        // Запас на длинные RAG-запросы. AppOptions.LlmTimeout остаётся
-        // отдельным ограничением, выставляемым в RagOptions.
-        http.Timeout = TimeSpan.FromMinutes(5);
         var provider = Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_RAG_PROVIDER");
         if (string.Equals(provider, "gigachat", StringComparison.OrdinalIgnoreCase))
-            return new GigaChatClient(http, AppOptions.FromEnvironment());
+            return Create(LlmProvider.GigaChat);
         if (!string.IsNullOrWhiteSpace(provider) && !string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("DESIGN_ASSISTANT_RAG_PROVIDER должен быть ollama или gigachat.");
+        return Create(LlmProvider.Ollama);
+    }
+
+    public ILlmClient Create(LlmProvider provider)
+    {
+        var http = _factory.CreateClient("rag-llm");
+        http.Timeout = TimeSpan.FromMinutes(5);
+        if (provider == LlmProvider.GigaChat)
+            return new GigaChatClient(http, AppOptions.FromEnvironment());
         http.BaseAddress = OllamaSettings.BaseAddress;
-        return new OllamaLlmClient(http, OllamaSettings.Model);
+        return new OllamaLlmClient(http, OllamaSettings.Model, thinkingEnabled: false);
     }
 }

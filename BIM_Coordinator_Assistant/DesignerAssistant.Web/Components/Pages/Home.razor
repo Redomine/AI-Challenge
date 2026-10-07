@@ -5,6 +5,7 @@
 @inject IWebHostEnvironment Environment
 @inject RagQueryService RagQuery
 @inject AutoTestRunner AutoTest
+@inject RagProviderComparisonRunner ProviderComparison
 @inject RagMiniChatService MiniChat
 @inject RagMiniChatScenarioRunner MiniChatTest
 
@@ -202,7 +203,11 @@
             <header class="workspace-header">
                 <div>
                     <h1>RAG-чат</h1>
-                    <p>Локальный поиск по индексу + LLM либо прямой запрос LLM. Без инструментов Revit.</p>
+                    <p>Локальный индекс · @(_ragProvider == RagLlmProvider.Ollama ? "Qwen" : "GigaChat")</p>
+                </div>
+                <div class="provider-switch" role="group" aria-label="Модель RAG-чата">
+                    <button class="@(_ragProvider == RagLlmProvider.Ollama ? "active" : "")" @onclick="() => _ragProvider = RagLlmProvider.Ollama" disabled="@_ragBusy">Qwen</button>
+                    <button class="@(_ragProvider == RagLlmProvider.GigaChat ? "active" : "")" @onclick="() => _ragProvider = RagLlmProvider.GigaChat" disabled="@(_ragBusy || !RagQuery.CloudAvailable)" title="@(RagQuery.CloudAvailable ? "" : "Нужен GIGACHAT_AUTH_KEY")">GigaChat</button>
                 </div>
                 <div class="rag-mode-toggle">
                     <label class="rag-mode-option @(_ragMode == RagMode.Rag ? "active" : "")">
@@ -327,13 +332,12 @@
                     <header>
                         <div>
                             <strong>Автотест RAG</strong>
-                            <p class="muted">«Обычный автотест» — legacy-прогон no-rag vs rag. «Сравнить режимы» — Day 23: no-rag, baseline и enhanced (rewrite + pre-K + threshold + post-K). «Тест День 24» — production-настройки с проверкой цитат и abstention «Не знаю». «Тест День 25» — два 10–15-репликовых сценария против RagMiniChatService: нормативы офиса (12) и серверы Revit (10) с проверкой цитат и abstain.</p>
+                            <p class="muted">«Тест День 24» проверяет цитаты и отказ от неподтверждённого ответа. «Тест День 25» проверяет сценарии Mini-чата.</p>
                         </div>
                         <div class="rag-composer-actions">
-                            <button class="secondary" @onclick="RunLegacyAutoTestAsync" disabled="@_ragBusy">Обычный автотест</button>
-                            <button class="secondary" @onclick="RunCompareModesAsync" disabled="@_ragBusy">Сравнить режимы</button>
                             <button class="primary" @onclick="RunDay24TestAsync" disabled="@_ragBusy">Тест День 24</button>
                             <button class="primary" @onclick="RunDay25TestAsync" disabled="@(_ragBusy || _miniChatBusy)">Тест День 25</button>
+                            <button class="primary" @onclick="RunDay28ComparisonAsync" disabled="@_ragBusy">Сравнить модели</button>
                             @if (_autoTestCancellation is not null)
                             {
                                 <button class="secondary" @onclick="CancelAutoTest">Остановить</button>
@@ -344,103 +348,46 @@
                     {
                         <pre class="rag-progress">@string.Join("\n", _autoTestProgress)</pre>
                     }
-                    @if (_autoTestAggregate is not null)
+                    @if (_providerComparison is not null)
                     {
-                        var agg = _autoTestAggregate;
+                        var localRuns = _providerComparison.LocalRuns.ToArray();
+                        var cloudRuns = _providerComparison.CloudRuns.ToArray();
                         <div class="rag-summary">
-                            <span>Всего прогонов: <strong>@agg.Runs.Count</strong></span>
-                            <span>С ошибкой: <strong>@agg.Runs.Count(r => r.Error is not null)</strong></span>
-                            <span class="muted">Негативных кейсов: @agg.NegativeCases.Count</span>
+                            <span>Qwen: качество <strong>@localRuns.Count(run => run.Passed)/@localRuns.Length</strong> · стабильность @localRuns.Count(run => run.SearchSucceeded && run.Error is null)/@localRuns.Length · среднее @AverageMs(localRuns) мс</span>
+                            @if (_providerComparison.CloudAvailable)
+                            {
+                                <span>GigaChat: качество <strong>@cloudRuns.Count(run => run.Passed)/@cloudRuns.Length</strong> · стабильность @cloudRuns.Count(run => run.SearchSucceeded && run.Error is null)/@cloudRuns.Length · среднее @AverageMs(cloudRuns) мс</span>
+                            }
+                            else
+                            {
+                                <span>GigaChat недоступен: ключ не задан.</span>
+                            }
                         </div>
-                        <details class="rag-runs" open>
-                            <summary>Сравнение режимов</summary>
+                        <div class="provider-comparison">
                             <table class="rag-mode-table">
-                                <thead><tr><th>Режим</th><th>Всего</th><th>Прошло</th><th>С ошибкой</th><th>Негативных</th><th>Негативных пройдено</th><th>Среднее источников</th></tr></thead>
+                                <thead><tr><th>Вопрос</th><th>Локально · Qwen</th><th>Облако · GigaChat</th></tr></thead>
                                 <tbody>
-                                @foreach (var a in agg.Aggregates)
+                                @foreach (var item in _providerComparison.Cases)
                                 {
                                     <tr>
-                                        <td><strong>@a.Mode</strong></td>
-                                        <td>@a.Total</td>
-                                        <td>@a.Passed</td>
-                                        <td>@a.WithErrors</td>
-                                        <td>@a.NegativeTotal</td>
-                                        <td>@a.NegativePassed</td>
-                                        <td>@a.AverageRetrieved.ToString("F2")</td>
+                                        <td><strong>#@item.Index</strong><div>@item.Question</div></td>
+                                        <td><span class="rag-check @(item.Local.Passed ? "ok" : "fail")">@(item.Local.Passed ? "качество: да" : "качество: нет")</span> · @item.Local.ElapsedMilliseconds мс · @item.Local.RetrievedCount источников
+                                            <div class="comparison-answer">@item.Local.Answer</div>
+                                            @if (item.Local.QualityIssue is not null) { <small>@item.Local.QualityIssue</small> }
+                                        </td>
+                                        <td>
+                                            @if (item.Cloud is { } cloud)
+                                            {
+                                                <span class="rag-check @(cloud.Passed ? "ok" : "fail")">@(cloud.Passed ? "качество: да" : "качество: нет")</span> <span>· @cloud.ElapsedMilliseconds мс · @cloud.RetrievedCount источников</span>
+                                                <div class="comparison-answer">@cloud.Answer</div>
+                                                @if (cloud.QualityIssue is not null) { <small>@cloud.QualityIssue</small> }
+                                            }
+                                            else { <span class="muted">Нет ключа GigaChat</span> }
+                                        </td>
                                     </tr>
                                 }
                                 </tbody>
                             </table>
-                            <p class="muted">Baseline: rewrite=@agg.Baseline.RewriteEnabled, pre-K=@agg.Baseline.PreFilterK, threshold=@agg.Baseline.ScoreThreshold.ToString("F3"), post-K=@agg.Baseline.PostFilterK</p>
-                            @if (agg.Enhanced is not null)
-                            {
-                                <p class="muted">Enhanced: rewrite=@agg.Enhanced.RewriteEnabled, pre-K=@agg.Enhanced.PreFilterK, threshold=@agg.Enhanced.ScoreThreshold.ToString("F3"), post-K=@agg.Enhanced.PostFilterK</p>
-                            }
-                        </details>
-                        @if (agg.NegativeCases.Count > 0)
-                        {
-                            <details class="rag-runs"><summary>Негативные кейсы (нет ожидаемых терминов)</summary>
-                                <ol>
-                                    @foreach (var n in agg.NegativeCases)
-                                    {
-                                        <li>
-                                            <div><strong>#@n.Index · @n.Mode</strong> <span class="muted">@n.Question</span></div>
-                                            <span class="rag-check @(n.Passed ? "ok" : "fail")">@(n.Passed ? "пройдено" : "провалено")</span>
-                                            @if (!string.IsNullOrWhiteSpace(n.Error))
-                                            {
-                                                <span class="rag-check fail">ошибка: @n.Error</span>
-                                            }
-                                        </li>
-                                    }
-                                </ol>
-                            </details>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(agg.Error))
-                        {
-                            <div class="rag-error">@agg.Error</div>
-                        }
-                        <details class="rag-runs">
-                            <summary>Результаты по вопросам</summary>
-                            <ol>
-                                @foreach (var run in agg.Runs)
-                                {
-                                    <li>
-                                        <div>
-                                            <strong>#@run.Index · @run.Mode</strong>
-                                            <span class="muted">@run.Question</span>
-                                        </div>
-                                        <div class="rag-checks">
-                                            <span class="rag-check @(run.FactCheckPassed ? "ok" : "fail")">термины: @(run.ExpectedFactTerms.Count == 0 ? "—" : $"{run.FoundFactTerms.Count}/{run.ExpectedFactTerms.Count}")</span>
-                                            <span class="rag-check @(run.SourceCheckPassed ? "ok" : "fail")">источник: @run.ExpectedSource</span>
-                                            <span class="rag-check @(run.SectionCheckPassed ? "ok" : "fail")">секция: @(run.ExpectedSectionContains ?? "—")</span>
-                                            @if (run.IsNegativeCase) { <span class="rag-check ok">негативный</span> }
-                                            @if (!string.IsNullOrWhiteSpace(run.Error)) { <span class="rag-check fail">ошибка: @run.Error</span> }
-                                        </div>
-                                        <pre>@run.Answer</pre>
-                                        @if (run.Sources.Count > 0)
-                                        {
-                                            <details><summary>Источники (@run.Sources.Count)</summary>
-                                                <ol>
-                                                    @foreach (var s in run.Sources)
-                                                    {
-                                                        <li><strong>@s.Title</strong> <span class="muted">@s.Source@(s.PdfPage is int p ? $" · стр. {p}" : "")</span> <small class="muted">@s.Section</small> <span class="muted">score @s.Score.ToString("F3")</span></li>
-                                                    }
-                                                </ol>
-                                            </details>
-                                        }
-                                    </li>
-                                }
-                            </ol>
-                        </details>
-                    }
-                    @if (_autoTestReport is not null && _autoTestAggregate is null)
-                    {
-                        <!-- legacy view, если aggregate не построен (старый путь вызова) -->
-                        <div class="rag-summary">
-                            <span>Всего: <strong>@_autoTestReport.Total</strong></span>
-                            <span>Прошло: <strong>@_autoTestReport.Passed</strong></span>
-                            <span>С ошибкой: <strong>@_autoTestReport.WithErrors</strong></span>
-                            <span class="muted">RAG-режим: @_autoTestReport.RagRuns.Count · No-RAG: @_autoTestReport.NoRagRuns.Count</span>
                         </div>
                     }
                     @if (_day24Report is not null)
@@ -979,6 +926,8 @@
     private bool _scheduledIsNew = true;
     private IReadOnlyList<string> _lastToolTraces = [];
     private RagMode _ragMode = RagMode.Rag;
+    private RagLlmProvider _ragProvider = RagLlmProvider.Ollama;
+    private RagProviderComparisonReport? _providerComparison;
     private string _ragQuestion = "";
     private string _ragStatus = "";
     private bool _ragBusy;
@@ -990,8 +939,6 @@
     private bool _ragControlsValid = true;
     private RagQueryResult? _ragLast;
     private List<string> _autoTestProgress = new();
-    private AutoTestReport? _autoTestReport;
-    private AutoTestAggregateReport? _autoTestAggregate;
     private IReadOnlyList<AutoTestRunResult>? _day24Report;
     private RagMiniChatDay25Report? _day25Report;
     private readonly string _miniChatConversationId = Guid.NewGuid().ToString("N");
@@ -1192,7 +1139,7 @@
                     scoreThreshold: _ragThreshold,
                     postFilterK: _ragPostK);
             }
-            _ragLast = await RagQuery.QueryAsync(question, _ragMode, overrides);
+            _ragLast = await RagQuery.QueryAsync(_ragProvider, question, _ragMode, overrides);
             _ragStatus = _ragLast.SearchSucceeded || _ragMode == RagMode.NoRag
                 ? $"Готово · режим {_ragLast.ModeLabel}"
                 : $"Поиск не выполнен";
@@ -1208,137 +1155,40 @@
         _ragStatus = "";
     }
 
-    private async Task RunLegacyAutoTestAsync()
+    private static string AverageMs(IEnumerable<RagProviderRun> runs)
+    {
+        var values = runs.Select(run => run.ElapsedMilliseconds).ToArray();
+        return values.Length == 0 ? "—" : values.Average().ToString("F0");
+    }
+
+    private async Task RunDay28ComparisonAsync()
     {
         _ragBusy = true;
         _autoTestCancellation = new CancellationTokenSource();
-        _autoTestProgress = new List<string> { "Загружаю контрольные вопросы..." };
-        // Очищаем детальный aggregate-отчёт, чтобы не показывать старые данные.
-        _autoTestAggregate = null;
-        _autoTestReport = null;
-        _ragStatus = "Обычный автотест запущен";
+        _autoTestProgress = ["Загружаю вопросы День 24..."];
+        _providerComparison = null;
+        _day25Report = null;
+        _ragStatus = "Сравнение моделей выполняется";
         try
         {
-            IReadOnlyList<AutoTestCase> cases;
-            try
+            var progress = new Progress<string>(message =>
             {
-                cases = await AutoTest.LoadCasesAsync(_autoTestCancellation.Token);
-            }
-            catch (Exception loadEx)
-            {
-                _notice = $"Не удалось загрузить контрольные вопросы: {loadEx.Message}";
-                _ragBusy = false;
-                return;
-            }
-            _autoTestProgress.Clear();
-            _autoTestProgress.Add($"Загружено {cases.Count} вопросов");
-            var progress = new Progress<string>(line =>
-            {
-                _autoTestProgress.Add(line);
+                _autoTestProgress.Add(message);
                 _ = InvokeAsync(StateHasChanged);
             });
-            // Legacy-путь: no-rag vs rag (baseline внутри RunAsync).
-            _autoTestReport = await AutoTest.RunAsync(
-                cases,
-                progress: progress,
-                cancellationToken: _autoTestCancellation.Token);
-            if (_autoTestReport.Error is not null)
-            {
-                _autoTestProgress.Add($"Ошибка: {_autoTestReport.Error}");
-            }
-            else
-            {
-                _autoTestProgress.Add($"Завершено: {_autoTestReport.Passed}/{_autoTestReport.Total} прогонов прошло");
-            }
-            _ragStatus = "Обычный автотест завершён";
+            _providerComparison = await ProviderComparison.RunAsync(progress, _autoTestCancellation.Token);
+            _ragStatus = $"Сравнение завершено: {_providerComparison.Cases.Count} вопросов";
         }
-        catch (Exception exception) { _notice = exception.Message; _ragStatus = "Ошибка автотеста"; }
+        catch (OperationCanceledException) { _ragStatus = "Сравнение остановлено"; }
+        catch (Exception exception) { _ragStatus = "Ошибка сравнения"; _notice = exception.Message; }
         finally
         {
-            _ragBusy = false;
-            _autoTestCancellation?.Dispose();
+            _autoTestCancellation.Dispose();
             _autoTestCancellation = null;
+            _ragBusy = false;
         }
     }
 
-    private async Task RunCompareModesAsync()
-    {
-        _ragBusy = true;
-        _autoTestCancellation = new CancellationTokenSource();
-        _autoTestProgress = new List<string> { "Загружаю контрольные вопросы..." };
-        // Очищаем legacy-отчёт, чтобы не показывать старые данные.
-        _autoTestReport = null;
-        _autoTestAggregate = null;
-        _ragStatus = "Сравнение режимов запущено";
-        try
-        {
-            IReadOnlyList<AutoTestCase> cases;
-            try
-            {
-                cases = await AutoTest.LoadCasesAsync(_autoTestCancellation.Token);
-            }
-            catch (Exception loadEx)
-            {
-                _notice = $"Не удалось загрузить контрольные вопросы: {loadEx.Message}";
-                _ragBusy = false;
-                return;
-            }
-            _autoTestProgress.Clear();
-            _autoTestProgress.Add($"Загружено {cases.Count} вопросов");
-            var progress = new Progress<string>(line =>
-            {
-                _autoTestProgress.Add(line);
-                _ = InvokeAsync(StateHasChanged);
-            });
-            // Сравниваем baseline и enhanced (с настройками текущего UI).
-            // Сравнение режимов: legacy-baseline (без threshold, без rewrite)
-            // против enhanced (с rewrite, threshold, pre/post-K). Legacy-baseline
-            // НЕ используется в продовом UI — там работает production-режим
-            // через ToProductionSettings (см. RagQueryService.DefaultForMode).
-            var baselineSettings = RagQuery.LegacyBaselineSettings();
-            RagRunSettings enhancedSettings;
-            try
-            {
-                enhancedSettings = _ragControlsValid
-                    ? RagOptions.TryCreateSettings(
-                        rewriteEnabled: true,
-                        preFilterK: _ragPreK,
-                        scoreThreshold: _ragThreshold,
-                        postFilterK: _ragPostK)
-                    : RagQuery.Options.ToEnhancedSettings();
-            }
-            catch (Exception ex)
-            {
-                _notice = $"Невалидные настройки enhanced: {ex.Message}. Используем дефолтные.";
-                enhancedSettings = RagQuery.Options.ToEnhancedSettings();
-            }
-            _autoTestAggregate = await AutoTest.RunAggregateAsync(
-                cases,
-                baseline: baselineSettings,
-                enhanced: enhancedSettings,
-                includeNoRag: true,
-                progress: progress,
-                cancellationToken: _autoTestCancellation.Token);
-            if (_autoTestAggregate.Error is not null)
-            {
-                _autoTestProgress.Add($"Ошибка: {_autoTestAggregate.Error}");
-            }
-            else
-            {
-                var passedTotal = _autoTestAggregate.Aggregates.Sum(a => a.Passed);
-                var totalTotal = _autoTestAggregate.Aggregates.Sum(a => a.Total);
-                _autoTestProgress.Add($"Завершено: {passedTotal}/{totalTotal} прогонов прошло");
-            }
-            _ragStatus = "Сравнение режимов завершено";
-        }
-        catch (Exception exception) { _notice = exception.Message; _ragStatus = "Ошибка автотеста"; }
-        finally
-        {
-            _ragBusy = false;
-            _autoTestCancellation?.Dispose();
-            _autoTestCancellation = null;
-        }
-    }
     private async Task RunDay24TestAsync()
     {
         // Тест День 24: production-настройки + проверка цитат + abstention.
@@ -1350,8 +1200,6 @@
         _ragBusy = true;
         _autoTestCancellation = new CancellationTokenSource();
         _autoTestProgress = new List<string> { "Загружаю контрольные вопросы..." };
-        _autoTestReport = null;
-        _autoTestAggregate = null;
         _ragStatus = "Тест День 24 запущен";
         try
         {

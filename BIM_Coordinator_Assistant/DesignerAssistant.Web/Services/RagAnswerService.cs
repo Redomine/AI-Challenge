@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DesignerAssistant.Llm;
 using DesignerAssistant.Models;
@@ -54,15 +55,39 @@ public sealed class RagAnswerService
         фрагмент. Верни одну строку без пояснений и без кавычек.
         """;
 
+    private const string StructuredInstructions = """
+        Ответь на вопрос только по предоставленному контексту. Верни JSON по заданной схеме.
+        answer: короткий ответ по фактам, без рассуждений и вступления. Если подтверждения нет, ответь «Не знаю».
+        Не повторяй вопрос вместо ответа. Для вопроса «куда обращаться» назови конкретные службы или роли из контекста.
+        quotes: для каждого факта приведи короткий дословный непрерывный фрагмент одного чанка и его chunk_id.
+        Не перефразируй quote. Не выдумывай chunk_id. Если ответ «Не знаю», quotes оставь пустым.
+        """;
+
+    private static readonly JsonElement StructuredAnswerSchema = JsonSerializer.SerializeToElement(new
+    {
+        type = "object",
+        properties = new
+        {
+            answer = new { type = "string" },
+            quotes = new { type = "array", items = new { type = "object",
+                properties = new { chunk_id = new { type = "string" }, quote = new { type = "string" } },
+                required = new[] { "chunk_id", "quote" } } }
+        },
+        required = new[] { "answer", "quotes" }
+    });
+
     private readonly RagOptions _options;
     private readonly OllamaEmbeddingsClient _embeddings;
     private readonly ILlmClient _llm;
+    private readonly bool _structuredOutput;
 
-    public RagAnswerService(RagOptions options, OllamaEmbeddingsClient embeddings, ILlmClient llm)
+    public RagAnswerService(RagOptions options, OllamaEmbeddingsClient embeddings, ILlmClient llm,
+        bool structuredOutput = false)
     {
         _options = options;
         _embeddings = embeddings;
         _llm = llm;
+        _structuredOutput = structuredOutput;
     }
 
     public RagOptions Options => _options;
@@ -182,11 +207,13 @@ public sealed class RagAnswerService
         {
             using var llmCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             llmCts.CancelAfter(_options.LlmTimeout);
-            var prompt = BuildPrompt(string.IsNullOrWhiteSpace(answerContext) ? originalQuestion : answerContext, sources);
-            var response = await _llm.GenerateAsync(
-                Instructions,
-                new[] { new ChatMessage("user", prompt) },
-                llmCts.Token);
+            var prompt = BuildPrompt(string.IsNullOrWhiteSpace(answerContext) ? originalQuestion : answerContext,
+                sources, _structuredOutput);
+            var messages = new[] { new ChatMessage("user", prompt) };
+            var response = _structuredOutput && _llm is IStructuredLlmClient structuredClient
+                ? await structuredClient.GenerateStructuredAsync(StructuredInstructions, messages,
+                    StructuredAnswerSchema, llmCts.Token)
+                : await _llm.GenerateAsync(Instructions, messages, llmCts.Token);
             rawAnswer = response.Content;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -258,7 +285,9 @@ public sealed class RagAnswerService
         }
 
         // 4. Парсим структурированный ответ и валидируем цитаты.
-        var parsed = RagCitationParser.Parse(rawAnswer);
+        var parsed = _structuredOutput
+            ? RagCitationParser.ParseJson(rawAnswer, sources)
+            : RagCitationParser.Parse(rawAnswer);
         if (parsed.CleanAnswer.StartsWith(RagAbstentionMessages.Russian,
                 StringComparison.OrdinalIgnoreCase))
         {
@@ -440,7 +469,7 @@ public sealed class RagAnswerService
         public int PreFilterCount => PreFilterScores.Count;
     }
 
-    private string BuildPrompt(string question, IReadOnlyList<RagSource> sources)
+    private string BuildPrompt(string question, IReadOnlyList<RagSource> sources, bool structuredOutput = false)
     {
         var sb = new StringBuilder();
         sb.AppendLine("Вопрос:");
@@ -497,7 +526,9 @@ public sealed class RagAnswerService
             }
         }
         sb.AppendLine();
-        sb.AppendLine("Дай короткий ответ по фактам из контекста, без выдуманных данных. Строго соблюдай формат ANSWER/QUOTES из инструкции.");
+        sb.AppendLine(structuredOutput
+            ? "Дай короткий ответ по фактам из контекста. Верни только JSON по заданной схеме."
+            : "Дай короткий ответ по фактам из контекста, без выдуманных данных. Строго соблюдай формат ANSWER/QUOTES из инструкции.");
         return sb.ToString();
     }
 

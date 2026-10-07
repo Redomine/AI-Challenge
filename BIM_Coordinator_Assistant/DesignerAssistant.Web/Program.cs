@@ -24,13 +24,13 @@ builder.Services.AddSingleton(sp =>
 {
     var options = sp.GetRequiredService<RagOptions>();
     var ollama = sp.GetRequiredService<OllamaEmbeddingsClient>();
-    var llm = sp.GetRequiredService<LlmClientFactory>().Create();
-    return new RagAnswerService(options, ollama, llm);
+    var llm = sp.GetRequiredService<LlmClientFactory>().Create(LlmProvider.Ollama);
+    return new RagAnswerService(options, ollama, llm, structuredOutput: true);
 });
 builder.Services.AddSingleton(sp =>
 {
     var options = sp.GetRequiredService<RagOptions>();
-    var llm = sp.GetRequiredService<LlmClientFactory>().Create();
+    var llm = sp.GetRequiredService<LlmClientFactory>().Create(LlmProvider.Ollama);
     return new NoRagAnswerService(llm, options.LlmTimeout);
 });
 builder.Services.AddSingleton(sp =>
@@ -47,8 +47,15 @@ builder.Services.AddSingleton(sp =>
     var options = sp.GetRequiredService<RagOptions>();
     var rag = sp.GetRequiredService<RagAnswerService>();
     var noRag = sp.GetRequiredService<NoRagAnswerService>();
-    return new RagQueryService(rag, noRag, options);
+    if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GIGACHAT_AUTH_KEY")))
+        return new RagQueryService(rag, noRag, options);
+    var factory = sp.GetRequiredService<LlmClientFactory>();
+    var embeddings = sp.GetRequiredService<OllamaEmbeddingsClient>();
+    var cloudRag = new RagAnswerService(options, embeddings, factory.Create(LlmProvider.GigaChat));
+    var cloudNoRag = new NoRagAnswerService(factory.Create(LlmProvider.GigaChat), options.LlmTimeout);
+    return new RagQueryService(rag, noRag, options, cloudRag, cloudNoRag);
 });
+builder.Services.AddSingleton<RagProviderComparisonRunner>();
 // RagMiniChatService + scenario runner: scoped, чтобы состояние
 // мини-чата было привязано к пользовательской сессии (Blazor circuit).
 builder.Services.AddScoped<RagMiniChatService>();
@@ -59,6 +66,18 @@ if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != 
 }
 
 var app = builder.Build();
+if (args is ["--day28-smoke"])
+{
+    using var scope = app.Services.CreateScope();
+    var autoTest = scope.ServiceProvider.GetRequiredService<AutoTestRunner>();
+    var cases = (await autoTest.LoadCasesAsync(CancellationToken.None))
+        .Where(testCase => testCase.ExpectedKind?.StartsWith("kb_positive", StringComparison.Ordinal) == true)
+        .Take(2).ToArray();
+    var report = await scope.ServiceProvider.GetRequiredService<RagProviderComparisonRunner>()
+        .RunAsync(cases);
+    Console.WriteLine(JsonSerializer.Serialize(report));
+    return;
+}
 if (args is ["--reasoning-smoke", var provider])
 {
     using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };

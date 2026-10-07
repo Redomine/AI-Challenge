@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace DesignerAssistant.Web.Services;
@@ -105,6 +106,39 @@ public static class RagCitationParser
         }
 
         return new ParseResult(answer, parsed, hasStructured);
+    }
+
+    public static ParseResult ParseJson(string raw, IReadOnlyList<RagSource> sources)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            var root = document.RootElement;
+            var answer = root.TryGetProperty("answer", out var answerElement) &&
+                answerElement.ValueKind == JsonValueKind.String ? answerElement.GetString() ?? "" : "";
+            var citations = new List<RagCitation>();
+            if (root.TryGetProperty("quotes", out var quotes) && quotes.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in quotes.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object) continue;
+                    var id = item.TryGetProperty("chunk_id", out var idElement) &&
+                        idElement.ValueKind == JsonValueKind.String ? idElement.GetString() ?? "" : "";
+                    var quote = item.TryGetProperty("quote", out var quoteElement) &&
+                        quoteElement.ValueKind == JsonValueKind.String ? quoteElement.GetString() ?? "" : "";
+                    var source = sources.FirstOrDefault(candidate => candidate.ChunkId == id);
+                    if (source is null && int.TryParse(id, out var ordinal) && ordinal >= 1 && ordinal <= sources.Count)
+                        source = sources[ordinal - 1];
+                    citations.Add(new RagCitation(id, source?.Source ?? "", source?.Section ?? "",
+                        source?.PdfPage, quote, false));
+                }
+            }
+            return new ParseResult(answer, citations, true);
+        }
+        catch (JsonException)
+        {
+            return new ParseResult("", [], false);
+        }
     }
 
     /// <summary>

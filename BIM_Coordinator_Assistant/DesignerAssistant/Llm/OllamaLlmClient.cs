@@ -10,12 +10,15 @@ public sealed class OllamaLlmClient : IToolCallingLlmClient, IStructuredLlmClien
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly int _maxOutputTokens;
+    private readonly bool _thinkingEnabled;
 
-    public OllamaLlmClient(HttpClient http, string model = "qwen3:4b", int maxOutputTokens = 1200)
+    public OllamaLlmClient(HttpClient http, string model = "qwen3:4b", int maxOutputTokens = 1200,
+        bool thinkingEnabled = true)
     {
         _http = http;
         _model = string.IsNullOrWhiteSpace(model) ? throw new ArgumentException("Укажите модель Ollama.", nameof(model)) : model;
         _maxOutputTokens = maxOutputTokens;
+        _thinkingEnabled = thinkingEnabled;
     }
 
     public Task<TokenCountResult> CountTextTokensAsync(
@@ -152,7 +155,7 @@ public sealed class OllamaLlmClient : IToolCallingLlmClient, IStructuredLlmClien
             model = _model,
             messages,
             stream = false,
-            think = schema is null && tools is null,
+            think = _thinkingEnabled && schema is null && tools is null,
             format = schema,
             tools,
             options = new { num_predict = _maxOutputTokens, num_ctx = 16384 }

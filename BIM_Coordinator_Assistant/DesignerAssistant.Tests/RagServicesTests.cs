@@ -326,28 +326,6 @@ public sealed class RagServicesTests : IDisposable
     }
 
     [Fact]
-    public void RagReport_Aggregates_PassedCounts()
-    {
-        var runs = new List<AutoTestRunResult>
-        {
-            new(1, "no-rag", "q", "pdf", null, null, false, false, 0, Array.Empty<RagSource>(),
-                "a", new[] { "x" }, new[] { "x" }, true, true, true, null),
-            new(1, "baseline", "q", "pdf", null, null, false, true, 1, new[]
-            {
-                new RagSource("c", "pdf", "T", "S", 1, "x", 0.1f)
-            }, "a", new[] { "x" }, new[] { "x" }, true, true, true, null),
-            new(2, "baseline", "q", "pdf", null, null, false, false, 0, Array.Empty<RagSource>(),
-                "a", new[] { "y" }, Array.Empty<string>(), false, false, true, "err"),
-        };
-        var report = new AutoTestReport(DateTimeOffset.Now, DateTimeOffset.Now, runs, null);
-        Assert.Equal(3, report.Total);
-        Assert.Equal(2, report.Passed);
-        Assert.Equal(1, report.WithErrors);
-        Assert.Single(report.NoRagRuns);
-        Assert.Equal(2, report.RagRuns.Count);
-    }
-
-    [Fact]
     public async Task RagQueryService_Delegates_ToUnderlyingServices()
     {
         var noRag = new NoRagAnswerService(new StubLlmClient("n/a"), TimeSpan.FromSeconds(1));

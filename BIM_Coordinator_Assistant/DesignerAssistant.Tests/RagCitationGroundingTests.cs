@@ -43,4 +43,26 @@ public sealed class RagCitationGroundingTests
         Assert.False(RagCitationParser.AnswerSupportedByQuotes(
             "Не знаю", [citation]));
     }
+
+    [Fact]
+    public void StructuredQuoteUsesRetrievedSourceMetadata()
+    {
+        const string json = """{"answer":"STLB-OK1 находится на revit-703","quotes":[{"chunk_id":"c703","quote":"Сервер: revit-703. Проект: STLB-OK1."}]}""";
+        var parsed = RagCitationParser.ValidateAgainstSources(
+            RagCitationParser.ParseJson(json, [Source]), [Source]);
+
+        Assert.True(parsed.HasAnyVerifiedCitation);
+        Assert.Equal(Source.Section, parsed.Citations[0].Section);
+        Assert.True(RagCitationParser.AnswerSupportedByQuotes(parsed.CleanAnswer, parsed.Citations));
+    }
+
+    [Fact]
+    public void StructuredQuoteWithUnknownChunkIsRejected()
+    {
+        const string json = """{"answer":"STLB-OK1 находится на revit-703","quotes":[{"chunk_id":"missing","quote":"Сервер: revit-703. Проект: STLB-OK1."}]}""";
+        var parsed = RagCitationParser.ValidateAgainstSources(
+            RagCitationParser.ParseJson(json, [Source]), [Source]);
+
+        Assert.False(parsed.HasAnyVerifiedCitation);
+    }
 }

@@ -20,6 +20,8 @@ public enum RagMode
     Enhanced,
 }
 
+public enum RagLlmProvider { Ollama, GigaChat }
+
 /// <summary>
 /// Объединённый ответ независимо от режима. Режим и текст ошибки
 /// возвращаются всегда, чтобы UI мог показать «что произошло».
@@ -71,6 +73,8 @@ public sealed class RagQueryService
     private readonly RagAnswerService _rag;
     private readonly NoRagAnswerService _noRag;
     private readonly RagOptions _options;
+    private readonly RagAnswerService? _cloudRag;
+    private readonly NoRagAnswerService? _cloudNoRag;
 
     public RagQueryService(
         RagAnswerService rag,
@@ -82,9 +86,21 @@ public sealed class RagQueryService
         _options = options;
     }
 
+    public RagQueryService(RagAnswerService rag, NoRagAnswerService noRag, RagOptions options,
+        RagAnswerService? cloudRag, NoRagAnswerService? cloudNoRag) : this(rag, noRag, options)
+    {
+        _cloudRag = cloudRag;
+        _cloudNoRag = cloudNoRag;
+    }
+
     public RagAnswerService Rag => _rag;
     public NoRagAnswerService NoRag => _noRag;
     public RagOptions Options => _options;
+    public bool CloudAvailable => _cloudRag is not null && _cloudNoRag is not null;
+
+    public Task<RagQueryResult> QueryAsync(RagLlmProvider provider, string question, RagMode mode,
+        RagRunSettings? settings = null, CancellationToken cancellationToken = default) =>
+        QueryCoreAsync(question, mode, settings, null, provider, cancellationToken);
 
     /// <summary>
     /// Прогон по дефолтным настройкам. Для UI-переключателя и
@@ -107,7 +123,7 @@ public sealed class RagQueryService
         RagMode mode,
         RagRunSettings? overrideSettings,
         CancellationToken cancellationToken = default) =>
-        await QueryAsync(question, mode, overrideSettings, null, cancellationToken);
+        await QueryCoreAsync(question, mode, overrideSettings, null, RagLlmProvider.Ollama, cancellationToken);
 
     public async Task<RagQueryResult> QueryAsync(
         string question,
@@ -115,7 +131,16 @@ public sealed class RagQueryService
         RagRunSettings? overrideSettings,
         string? answerContext,
         CancellationToken cancellationToken = default)
+        => await QueryCoreAsync(question, mode, overrideSettings, answerContext, RagLlmProvider.Ollama, cancellationToken);
+
+    private async Task<RagQueryResult> QueryCoreAsync(
+        string question, RagMode mode, RagRunSettings? overrideSettings, string? answerContext,
+        RagLlmProvider provider, CancellationToken cancellationToken)
     {
+        if (provider == RagLlmProvider.GigaChat && !CloudAvailable)
+            throw new InvalidOperationException("GigaChat недоступен: задайте GIGACHAT_AUTH_KEY и перезапустите приложение.");
+        var ragService = provider == RagLlmProvider.GigaChat ? _cloudRag! : _rag;
+        var noRagService = provider == RagLlmProvider.GigaChat ? _cloudNoRag! : _noRag;
         if (string.IsNullOrWhiteSpace(question))
         {
             return new RagQueryResult(
@@ -132,7 +157,7 @@ public sealed class RagQueryService
 
         if (mode == RagMode.NoRag)
         {
-            var noRag = await _noRag.AskAsync(question, cancellationToken);
+            var noRag = await noRagService.AskAsync(question, cancellationToken);
             return new RagQueryResult(
                 noRag.Question,
                 RagMode.NoRag,
@@ -172,7 +197,7 @@ public sealed class RagQueryService
                 overrideSettings);
         }
 
-        var rag = await _rag.AskAsync(question, effective, answerContext, cancellationToken);
+        var rag = await ragService.AskAsync(question, effective, answerContext, cancellationToken);
         return new RagQueryResult(
             rag.Question,
             mode,

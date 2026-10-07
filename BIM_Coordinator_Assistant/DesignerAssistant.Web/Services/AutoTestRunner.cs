@@ -232,52 +232,6 @@ public sealed class AutoTestRunner
     }
 
     /// <summary>
-    /// Простой прогон baseline+rag (без enhanced и без агрегатов).
-    /// Используется старыми тестами; делегирует полному
-    /// <see cref="RunAggregateAsync"/> для согласованности.
-    /// </summary>
-    public Task<AutoTestReport> RunAsync(
-        IReadOnlyList<AutoTestCase> cases,
-        IProgress<string>? progress,
-        CancellationToken cancellationToken)
-    {
-        // legacy-формат: «rag» и «no-rag». Чтобы не ломать обратную совместимость,
-        // прогоним через полный путь и смаппим обратно.
-        return RunLegacyAsync(cases, progress, cancellationToken);
-    }
-
-    private async Task<AutoTestReport> RunLegacyAsync(
-        IReadOnlyList<AutoTestCase> cases,
-        IProgress<string>? progress,
-        CancellationToken cancellationToken)
-    {
-        // Используем baseline-настройки через дефолт.
-        var baseline = new RagRunSettings(
-            RewriteEnabled: false,
-            PreFilterK: 4,
-            ScoreThreshold: 0f,
-            PostFilterK: 4,
-            RewriteTimeout: TimeSpan.FromSeconds(20));
-        var aggregate = await RunAggregateAsync(
-            cases,
-            baseline: baseline,
-            enhanced: null,
-            includeNoRag: true,
-            progress: progress,
-            cancellationToken: cancellationToken);
-        // Переименовываем «baseline» → «rag» для совместимости со старым контрактом.
-        var renamed = aggregate.Runs.Select(r =>
-            r.Mode == "baseline"
-                ? r with { Mode = "rag" }
-                : r).ToArray();
-        return new AutoTestReport(
-            StartedAt: aggregate.StartedAt,
-            CompletedAt: aggregate.CompletedAt,
-            Runs: renamed,
-            Error: aggregate.Error);
-    }
-
-    /// <summary>
     /// Полный прогон: baseline (RagMode.Rag) и enhanced (RagMode.Enhanced)
     /// обязательно, no-rag — опционально. Возвращает агрегаты по режимам,
     /// список негативных кейсов и фактические настройки прогона.

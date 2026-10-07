@@ -38,6 +38,20 @@ public sealed class OllamaLlmClientTests
     }
 
     [Fact]
+    public async Task RagClientCanDisableThinkingForStrictAnswerFormat()
+    {
+        var handler = new FakeHandler("""{"message":{"content":"ANSWER: Проверено\nQUOTES:"},"done_reason":"stop"}""");
+        var client = new OllamaLlmClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") },
+            thinkingEnabled: false);
+
+        var answer = await client.GenerateAsync("Use strict format", [new ChatMessage("user", "Check")]);
+
+        Assert.StartsWith("ANSWER:", answer.Content);
+        Assert.Contains("\"think\":false", handler.Requests[0]);
+    }
+
+    [Fact]
     public async Task PassesJsonSchemaToLocalApi()
     {
         var handler = new FakeHandler("""{"message":{"content":"{\"status\":\"PASS\"}"},"done_reason":"stop"}""");

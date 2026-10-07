@@ -332,38 +332,6 @@ public sealed record AutoTestRunResult(
 }
 
 /// <summary>
-/// Итог автотеста — список результатов плюс агрегированные счётчики
-/// по всем режимам. Никаких фейковых метрик: оценка строится по
-/// детерминированной проверке ожидаемых терминов/источников.
-/// </summary>
-public sealed record AutoTestReport(
-    DateTimeOffset StartedAt,
-    DateTimeOffset CompletedAt,
-    IReadOnlyList<AutoTestRunResult> Runs,
-    string? Error)
-{
-    public int Total => Runs.Count;
-    public int Passed => Runs.Count(r => r.Passed);
-    public int WithErrors => Runs.Count(r => r.Error is not null);
-
-    public IReadOnlyList<AutoTestRunResult> NoRagRuns =>
-        Runs.Where(r => r.Mode == "no-rag").ToArray();
-
-    public IReadOnlyList<AutoTestRunResult> BaselineRuns =>
-        Runs.Where(r => r.Mode == "baseline").ToArray();
-
-    public IReadOnlyList<AutoTestRunResult> EnhancedRuns =>
-        Runs.Where(r => r.Mode == "enhanced").ToArray();
-
-    public IReadOnlyList<AutoTestRunResult> RagRuns =>
-        BaselineRuns.Concat(EnhancedRuns).ToArray();
-
-    /// <summary>Негативные кейсы: ожидаемых терминов нет, провал только при ошибке.</summary>
-    public IReadOnlyList<AutoTestRunResult> NegativeCases =>
-        Runs.Where(r => r.IsNegativeCase).ToArray();
-}
-
-/// <summary>
 /// Агрегированные метрики по одному режиму: всего, прошло, ошибки,
 /// среднее число найденных источников, число негативных кейсов и
 /// сколько из них прошло «по нулевым ожиданиям».
