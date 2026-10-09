@@ -6,6 +6,7 @@ using DesignerAssistant.Prompts;
 using DesignerAssistant.Revit;
 using DesignerAssistant.Storage;
 using DesignerAssistant.Tools;
+using System.Text.Json;
 
 namespace DesignerAssistant.Web.Services;
 
@@ -22,6 +23,7 @@ public sealed class AssistantSession : IAsyncDisposable
     private RagQueryService? _ragQuery;
     private SwitchableLlmClient? _llm;
     private bool _allowInteractiveConfirmation = true;
+    private Func<string, Task<bool>>? _confirmationHandler;
 
     public AssistantSession(IHttpClientFactory httpClientFactory) => _httpClientFactory = httpClientFactory;
 
@@ -62,28 +64,35 @@ public sealed class AssistantSession : IAsyncDisposable
         bool autoApproveRevitChanges = false,
         int operationTimeoutMinutes = 10,
         bool automaticNotifications = true,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        OllamaTuningProfile tuningProfile = OllamaTuningProfile.Standard,
+        string? databasePathOverride = null,
+        Func<string, Task<bool>>? confirmationHandler = null)
     {
         if (_agent is not null) return;
         _allowInteractiveConfirmation = allowInteractiveConfirmation;
+        _confirmationHandler = confirmationHandler;
         AutoApproveRevitChanges = autoApproveRevitChanges;
         OperationTimeoutMinutes = operationTimeoutMinutes;
         _ragQuery = ragQuery;
         var databasePath = Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DB_PATH");
-        if (string.IsNullOrWhiteSpace(databasePath))
+        if (string.IsNullOrWhiteSpace(databasePath) && databasePathOverride is null)
         {
             databasePath = Path.GetFullPath(Path.Combine(contentRoot, "..", "DesignerAssistant", "designer-assistant.db"));
             Environment.SetEnvironmentVariable("DESIGN_ASSISTANT_DB_PATH", databasePath);
         }
 
         Options = AppOptions.FromEnvironment(requireGigaChatKey: false);
+        if (databasePathOverride is not null)
+            Options = Options with { DatabasePath = Path.GetFullPath(databasePathOverride) };
         var httpClient = _httpClientFactory.CreateClient();
         httpClient.Timeout = TimeSpan.FromMinutes(2);
         var ollamaHttp = _httpClientFactory.CreateClient();
         ollamaHttp.BaseAddress = OllamaSettings.BaseAddress;
         ollamaHttp.Timeout = TimeSpan.FromMinutes(5);
         _llm = new SwitchableLlmClient(
-            new OllamaLlmClient(ollamaHttp, OllamaSettings.Model, Options.MaxOutputTokens),
+            new OllamaLlmClient(ollamaHttp, OllamaSettings.Model, Options.MaxOutputTokens,
+                profile: tuningProfile),
             new GigaChatClient(httpClient, Options),
             !string.IsNullOrWhiteSpace(Options.AuthorizationKey));
         _llm.Changed += () => Changed?.Invoke();
@@ -99,7 +108,8 @@ public sealed class AssistantSession : IAsyncDisposable
         _reporter = new TaskOperationsReporter(_log, _ops, automaticNotifications);
         var workspace = new WorkspaceToolProvider(WorkspaceRootLocator.Find(contentRoot));
         var tools = new AuditedToolProvider(new CompositeToolProvider(_revit, workspace, _log, _ops), _log);
-        _agent = new DesignAssistantAgent(_llm, history, memory, DesignerAssistantPrompt.Text, Options, tools, profiles, invariants);
+        _agent = new DesignAssistantAgent(_llm, history, memory, DesignerAssistantPrompt.Text, Options,
+            tools, profiles, invariants, optimizedLocal: tuningProfile == OllamaTuningProfile.Optimized);
         await _agent.InitializeAsync(cancellationToken);
         _workflow = new TaskWorkflow(_agent);
         _workflow.ActivityChanged += () => Changed?.Invoke();
@@ -109,6 +119,13 @@ public sealed class AssistantSession : IAsyncDisposable
     {
         _llm?.Select(provider);
         _workflow?.ClearActivity();
+    }
+
+    public async Task<ToolResultEnvelope> RunConfirmedRevitToolAsync(
+        string name, JsonElement arguments, CancellationToken cancellationToken = default)
+    {
+        var policy = new ToolExecutionPolicy(Revit, await Revit.GetToolsAsync(cancellationToken));
+        return await policy.ExecuteAsync(name, arguments, cancellationToken);
     }
 
     public Task<AgentResponse> AskAsync(string message, CancellationToken cancellationToken = default) =>
@@ -345,6 +362,7 @@ public sealed class AssistantSession : IAsyncDisposable
 
     private async Task<bool> ConfirmTransactionAsync(string proposal)
     {
+        if (_confirmationHandler is not null) return await _confirmationHandler(proposal);
         if (AutoApproveRevitChanges) return true;
         if (!_allowInteractiveConfirmation) return false;
         _confirmation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

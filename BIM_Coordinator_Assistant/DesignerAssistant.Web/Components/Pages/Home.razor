@@ -8,6 +8,7 @@
 @inject RagProviderComparisonRunner ProviderComparison
 @inject RagMiniChatService MiniChat
 @inject RagMiniChatScenarioRunner MiniChatTest
+@inject AssistantOptimizationRunner OptimizationRunner
 
 <PageTitle>BIM Assistant</PageTitle>
 
@@ -50,6 +51,7 @@
                         <button class="@(Session.Provider == LlmProvider.Ollama ? "active" : "")" @onclick="() => SelectProvider(LlmProvider.Ollama)" disabled="@(_busy || TaskIsActive)">Qwen</button>
                         <button class="@(Session.Provider == LlmProvider.GigaChat ? "active" : "")" @onclick="() => SelectProvider(LlmProvider.GigaChat)" disabled="@(_busy || TaskIsActive)">GigaChat</button>
                     </div>
+                    <button class="secondary" @onclick="RunOptimizationTestAsync" disabled="@(_busy || _benchmarkBusy || TaskIsActive)" title="Автоматически подтвердит открытие тестовой модели и её синхронизацию с закрытием">Тест оптимизации</button>
                     <button class="secondary" @onclick="ClearHistoryAsync" disabled="@_busy">Очистить диалог</button>
                 </div>
             </header>
@@ -67,7 +69,37 @@
                 </div>
             </section>
             <div class="chat-content">
-            <section class="chat-log @(Session.History.Count == 0 ? "empty" : "")" aria-live="polite">
+            <section class="chat-log @(Session.History.Count == 0 && !_benchmarkBusy && _benchmarkReport is null ? "empty" : "")" aria-live="polite">
+                @if (_benchmarkBusy || _benchmarkReport is not null || _benchmarkProgress.Count > 0)
+                {
+                    <section class="optimization-report" aria-label="Сравнение локальной модели">
+                        <header><strong>Сравнение Qwen</strong><span>@(_benchmarkBusy ? "Выполняется" : "Завершено")</span></header>
+                        <div class="optimization-path">@_benchmarkModelPath</div>
+                        @if (_benchmarkBusy) { <button class="secondary" @onclick="CancelOptimizationTest">Остановить</button> }
+                        @if (_benchmarkProgress.Count > 0) { <p>@_benchmarkProgress[^1]</p> }
+                        @if (_benchmarkReport is not null)
+                        {
+                            <table class="optimization-table">
+                                <thead><tr><th>Профиль</th><th>Качество</th><th>Время</th><th>Пик VRAM</th><th>Пик RAM Ollama</th></tr></thead>
+                                <tbody>
+                                @foreach (var run in _benchmarkReport.Runs)
+                                {
+                                    <tr><td>@(run.Profile == "Standard" ? "Базовый" : "Оптимизированный")</td>
+                                        <td>@(run.Passed ? "2/2" : $"{run.Steps.Take(2).Count(step => step.Passed)}/2")</td>
+                                        <td>@((run.ElapsedMilliseconds / 1000.0).ToString("F1")) с</td>
+                                        <td>@(run.PeakGpuMemoryMiB?.ToString() ?? "—") МиБ*</td>
+                                        <td>@(run.PeakOllamaRamMiB?.ToString() ?? "—") МиБ</td></tr>
+                                    @foreach (var step in run.Steps)
+                                    {
+                                        <tr class="optimization-step"><td>↳ @step.Name</td><td>@(step.Passed ? "пройден" : "не пройден")</td><td>@((step.ElapsedMilliseconds / 1000.0).ToString("F1")) с</td><td colspan="2">@step.Error</td></tr>
+                                    }
+                                }
+                                </tbody>
+                            </table>
+                            <small>* Общая занятая память GPU, включая Revit и другие процессы.</small>
+                        }
+                    </section>
+                }
                 @if (Session.History.Count == 0)
                 {
                     <div class="empty-chat"><h2>Новый диалог</h2><p>Опишите задачу по модели, плагину или скрипту.</p></div>
@@ -169,7 +201,7 @@
                 {
                     <details class="tool-details"><summary>Диагностика инструментов</summary>@foreach (var trace in _lastToolTraces) { <pre>@trace</pre> }</details>
                 }
-                <textarea @bind="_message" @bind:event="oninput" placeholder="Сообщение ассистенту" rows="3" disabled="@_busy"></textarea>
+                <textarea @bind="_message" @bind:event="oninput" placeholder="Сообщение ассистенту" rows="3" disabled="@(_busy || _benchmarkBusy)"></textarea>
                 <div class="composer-actions">
                     <span>@(_lastUsage ?? "Enter в поле переносит строку")</span>
                     @if (Session.AwaitingPlanApproval)
@@ -193,7 +225,7 @@
                     }
                     else
                     {
-                        <button class="primary" @onclick="SendAsync" disabled="@(_busy || TaskIsActive || string.IsNullOrWhiteSpace(_message))">Отправить</button>
+                        <button class="primary" @onclick="SendAsync" disabled="@(_busy || _benchmarkBusy || TaskIsActive || string.IsNullOrWhiteSpace(_message))">Отправить</button>
                     }
                 </div>
             </footer>
@@ -946,6 +978,11 @@
     private string _miniChatQuestion = "", _miniChatGoal = "", _miniChatNewClarification = "", _miniChatNewTerm = "", _miniChatStatus = "";
     private bool _miniChatBusy;
     private CancellationTokenSource? _autoTestCancellation;
+    private readonly string _benchmarkModelPath = @"C:\Users\Mankaev_r\Desktop\_Тесты\Тестовый файл.rvt";
+    private AssistantOptimizationReport? _benchmarkReport;
+    private List<string> _benchmarkProgress = [];
+    private CancellationTokenSource? _benchmarkCancellation;
+    private bool _benchmarkBusy;
     private static readonly TaskState[] PrimaryTaskStages = [TaskState.Planning, TaskState.Execution, TaskState.Validation, TaskState.Done];
 
     protected override async Task OnInitializedAsync()
@@ -957,6 +994,37 @@
     }
 
     private string NavClass(string section) => _section == section ? "active" : "";
+    private async Task RunOptimizationTestAsync()
+    {
+        if (_benchmarkBusy) return;
+        _benchmarkBusy = true;
+        _benchmarkReport = null;
+        _benchmarkProgress = [];
+        _benchmarkCancellation = new CancellationTokenSource();
+        try
+        {
+            var progress = new Progress<string>(message =>
+            {
+                _benchmarkProgress.Add(message);
+                _ = InvokeAsync(StateHasChanged);
+            });
+            _benchmarkReport = await OptimizationRunner.RunAsync(_benchmarkModelPath,
+                progress, _benchmarkCancellation.Token);
+        }
+        catch (OperationCanceledException) { _benchmarkProgress.Add("Тест остановлен."); }
+        catch (Exception exception) { _benchmarkProgress.Add($"Ошибка теста: {exception.Message}"); }
+        finally
+        {
+            _benchmarkCancellation.Dispose();
+            _benchmarkCancellation = null;
+            _benchmarkBusy = false;
+        }
+    }
+
+    private void CancelOptimizationTest()
+    {
+        _benchmarkCancellation?.Cancel();
+    }
     private string ProviderLabel => Session.Provider == LlmProvider.Ollama ? $"Локально: {Session.OllamaModel}" : "GigaChat";
     private void SelectProvider(LlmProvider provider)
     {
@@ -1014,6 +1082,7 @@
 
     private async Task SendAsync()
     {
+        if (_benchmarkBusy) return;
         var text = _message.Trim(); if (text.Length == 0) return;
         _message = ""; _busy = true; _notice = null;
         try

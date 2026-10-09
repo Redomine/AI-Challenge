@@ -56,6 +56,7 @@ builder.Services.AddSingleton(sp =>
     return new RagQueryService(rag, noRag, options, cloudRag, cloudNoRag);
 });
 builder.Services.AddSingleton<RagProviderComparisonRunner>();
+builder.Services.AddScoped<AssistantOptimizationRunner>();
 // RagMiniChatService + scenario runner: scoped, чтобы состояние
 // мини-чата было привязано к пользовательской сессии (Blazor circuit).
 builder.Services.AddScoped<RagMiniChatService>();
@@ -66,6 +67,16 @@ if (Environment.GetEnvironmentVariable("DESIGN_ASSISTANT_DISABLE_SCHEDULER") != 
 }
 
 var app = builder.Build();
+if (args is ["--day29-live", var modelPath])
+{
+    using var scope = app.Services.CreateScope();
+    var progress = new Progress<string>(Console.WriteLine);
+    var report = await scope.ServiceProvider.GetRequiredService<AssistantOptimizationRunner>()
+        .RunAsync(modelPath, progress);
+    Console.WriteLine(JsonSerializer.Serialize(report));
+    Environment.ExitCode = report.Runs.Count == 2 && report.Runs.All(run => run.Passed) ? 0 : 1;
+    return;
+}
 if (args is ["--day28-smoke"])
 {
     using var scope = app.Services.CreateScope();

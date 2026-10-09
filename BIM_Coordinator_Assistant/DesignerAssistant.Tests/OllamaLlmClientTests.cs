@@ -66,6 +66,23 @@ public sealed class OllamaLlmClientTests
     }
 
     [Fact]
+    public async Task OptimizedProfileSendsDedicatedGenerationOptions()
+    {
+        var handler = new FakeHandler("""{"message":{"content":"ok"},"done_reason":"stop"}""");
+        var client = new OllamaLlmClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") },
+            profile: OllamaTuningProfile.Optimized);
+
+        await client.GenerateAsync("Answer", [new ChatMessage("user", "Check")]);
+
+        using var request = JsonDocument.Parse(handler.Requests[0]);
+        var options = request.RootElement.GetProperty("options");
+        Assert.Equal(0.1, options.GetProperty("temperature").GetDouble());
+        Assert.Equal(1800, options.GetProperty("num_predict").GetInt32());
+        Assert.Equal(24576, options.GetProperty("num_ctx").GetInt32());
+    }
+
+    [Fact]
     public async Task SendsToolResultBackToLocalModel()
     {
         var handler = new FakeHandler(

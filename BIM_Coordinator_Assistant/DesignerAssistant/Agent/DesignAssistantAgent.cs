@@ -16,6 +16,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
     private readonly IToolProvider? _toolProvider;
     private readonly string _instructions;
     private readonly int _recentMessageCount;
+    private readonly bool _optimizedLocal;
     private readonly List<ChatMessage> _history = [];
     private bool _isInitialized;
     public TaskPlan? LastStructuredPlan { get; private set; }
@@ -28,7 +29,8 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         AppOptions options,
         IToolProvider? toolProvider = null,
         IUserProfileStore? profileStore = null,
-        IInvariantStore? invariantStore = null)
+        IInvariantStore? invariantStore = null,
+        bool optimizedLocal = false)
     {
         _llmClient = llmClient ?? throw new ArgumentNullException(nameof(llmClient));
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
@@ -38,6 +40,7 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
         _toolProvider = toolProvider;
         _instructions = string.IsNullOrWhiteSpace(instructions) ? throw new ArgumentException("Системная инструкция не задана.", nameof(instructions)) : instructions;
         _recentMessageCount = options.RecentMessageCount;
+        _optimizedLocal = optimizedLocal;
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -104,6 +107,12 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Для шага с аргументом parameterName предусмотри получение фактических имён через revit_get_element_parameters: сначала получи ElementId, затем параметры подходящего элемента, а точное parameterName возьми из результата этого шага. Не доверяй регистру имени из запроса пользователя.
             Исключение для массовой проверки всей модели через revit_custom_filter_selection: используй имя из запроса как гипотезу, а сам инструмент покажет missing и ambiguous; не запрашивай список всех ElementId и передавай selectionId из каждого шага в следующий.
             """;
+        if (_optimizedLocal)
+            stageInstructions += """
+
+                Для цикла работы с моделью: открытие выполняет revit_custom_open_model, а синхронизацию с закрытием — revit_custom_sync_relinquish_and_close. Не добавляй отдельный инструмент закрытия, если синхронизация уже закрывает модель.
+                Составляй минимальный план только с необходимыми инструментами. Для каждого пути используй точное значение из запроса; для результатов инструментов указывай argumentSources, не угадывай их.
+                """;
         var revision = string.IsNullOrWhiteSpace(revisionContext)
             ? ""
             : $"\n\n[PLAN_REVISION_CONTEXT]\n{revisionContext}\n[/PLAN_REVISION_CONTEXT]";
@@ -157,6 +166,12 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Любые пути и другие литеральные значения бери дословно из QUERY или согласованного плана; не переводи и не нормализуй части пути.
             Для любого parameterName сначала используй точное имя из результата revit_get_element_parameters. Единственное совпадение без учёта регистра исправь автоматически. При нескольких совпадениях или отсутствии параметра верни [CLARIFY]. После ошибки отсутствующего параметра не повторяй то же имя.
             """;
+        if (_optimizedLocal)
+            stageInstructions += """
+
+                После вызова MCP опирайся только на его фактический результат. Если операция ожидает завершения, дождись его подходящим инструментом; при ошибке остановись. Не повторяй изменяющий вызов без подтверждения, что предыдущий не выполнился.
+                Для синхронизации и закрытия назови оба подтверждённых результата; не считай отправку команды успешным завершением.
+                """;
         var validationFeedback = string.IsNullOrWhiteSpace(context.ValidationResult)
             ? ""
             : $"\n\n[VALIDATION_FEEDBACK]\n{context.ValidationResult}\n[/VALIDATION_FEEDBACK]";
@@ -219,6 +234,11 @@ public sealed class DesignAssistantAgent : IDesignAssistantAgent, ITaskStageRunn
             Верни status=RETRY_EXECUTION, если исправление полностью находится в пределах согласованного плана.
             Верни status=REPLAN, если для исправления нужно изменить согласованный план.
             """;
+        if (_optimizedLocal)
+            stageInstructions += """
+
+                Проверяй отдельно открытие, синхронизацию и закрытие по завершённым результатам MCP. При ошибке, pending/queued/running или отсутствии результата не ставь PASS и не утверждай, что действие выполнено.
+                """;
         var plan = context.StructuredPlan is null ? context.Plan : JsonSerializer.Serialize(context.StructuredPlan);
         var input = $"[QUERY]\n{context.Query}\n[/QUERY]\n\n[APPROVED_PLAN_JSON]\n{plan}\n[/APPROVED_PLAN_JSON]\n\n[EXECUTION_RESULT]\n{context.ExecutionResult}\n[/EXECUTION_RESULT]";
         var errors = new List<string>();

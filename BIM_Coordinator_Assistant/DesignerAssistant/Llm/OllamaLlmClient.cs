@@ -5,20 +5,24 @@ using DesignerAssistant.Models;
 
 namespace DesignerAssistant.Llm;
 
+public enum OllamaTuningProfile { Standard, Optimized }
+
 public sealed class OllamaLlmClient : IToolCallingLlmClient, IStructuredLlmClient
 {
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly int _maxOutputTokens;
     private readonly bool _thinkingEnabled;
+    private readonly OllamaTuningProfile _profile;
 
     public OllamaLlmClient(HttpClient http, string model = "qwen3:4b", int maxOutputTokens = 1200,
-        bool thinkingEnabled = true)
+        bool thinkingEnabled = true, OllamaTuningProfile profile = OllamaTuningProfile.Standard)
     {
         _http = http;
         _model = string.IsNullOrWhiteSpace(model) ? throw new ArgumentException("Укажите модель Ollama.", nameof(model)) : model;
         _maxOutputTokens = maxOutputTokens;
         _thinkingEnabled = thinkingEnabled;
+        _profile = profile;
     }
 
     public Task<TokenCountResult> CountTextTokensAsync(
@@ -150,6 +154,12 @@ public sealed class OllamaLlmClient : IToolCallingLlmClient, IStructuredLlmClien
     private async Task<JsonDocument> PostAsync(List<Dictionary<string, object?>> messages, JsonElement? schema,
         object? tools, CancellationToken cancellationToken)
     {
+        var options = new Dictionary<string, object>
+        {
+            ["num_predict"] = _profile == OllamaTuningProfile.Optimized ? Math.Max(_maxOutputTokens, 1800) : _maxOutputTokens,
+            ["num_ctx"] = _profile == OllamaTuningProfile.Optimized ? 24576 : 16384
+        };
+        if (_profile == OllamaTuningProfile.Optimized) options["temperature"] = 0.1;
         using var response = await _http.PostAsJsonAsync("api/chat", new
         {
             model = _model,
@@ -158,7 +168,7 @@ public sealed class OllamaLlmClient : IToolCallingLlmClient, IStructuredLlmClien
             think = _thinkingEnabled && schema is null && tools is null,
             format = schema,
             tools,
-            options = new { num_predict = _maxOutputTokens, num_ctx = 16384 }
+            options
         }, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
